@@ -382,6 +382,9 @@ show_install_error() {
   if [[ "$summary" == *"dpkg was interrupted"* ]]; then
     say "依赖安装失败：dpkg 上次操作被中断。" "Dependency installation failed: dpkg was interrupted."
     say "请先运行：sudo dpkg --configure -a" "Run this first: sudo dpkg --configure -a"
+  elif [[ "$summary" =~ [Pp]assword[[:space:]]+is[[:space:]]+required|[Tt]erminal[[:space:]]+is[[:space:]]+required|[Pp]ermission[[:space:]]+denied|[Mm]ust[[:space:]]+be[[:space:]]+run[[:space:]]+as[[:space:]]+root ]]; then
+    say "依赖安装未执行：当前用户没有可用的 sudo 权限。" "Dependency installation was not performed: usable sudo permission is unavailable."
+    say "请先运行：sudo -v，然后重新运行 ABS；也可使用 root 用户，或加 -n 跳过自动安装。" "Run 'sudo -v' first and rerun ABS; alternatively use root or pass -n to skip automatic installation."
   elif [ -n "$summary" ]; then
     say "依赖安装失败：$summary" "Dependency installation failed: $summary"
   else

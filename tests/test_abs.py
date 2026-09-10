@@ -177,6 +177,28 @@ class AbsTests(unittest.TestCase):
         self.assertIn("sudo dpkg --configure -a", proc.stdout)
         self.assertIn(str(log), proc.stdout)
 
+    def test_sudo_password_error_is_actionable(self) -> None:
+        language = extract_between(self.source, "is_zh() {", "\n\nusage()")
+        install = extract_between(self.source, "install_error_summary() {", "\n}\n\ninstall_tools()") + "\n}\n"
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "install-apt.err"
+            log.write_text("sudo: a password is required\n", encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    language + "\n" + install + '\nABS_LANG=zh\nINSTALL_ERROR_LOG="$1"\nshow_install_error',
+                    "bash",
+                    str(log),
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        self.assertIn("依赖安装未执行：当前用户没有可用的 sudo 权限", proc.stdout)
+        self.assertIn("sudo -v", proc.stdout)
+        self.assertIn("-n", proc.stdout)
+
     def test_cloudflare_download_retries_once(self) -> None:
         helper = extract_between(self.source, "cloudflare_download() {", "\n}\n\ncloudflare_upload()") + "\n}\n"
         with tempfile.TemporaryDirectory() as td:
