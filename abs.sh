@@ -279,7 +279,15 @@ sudo_cmd() {
   if [ "${EUID:-$(id -u)}" -eq 0 ]; then
     "$@"
   elif have sudo; then
-    sudo -n "$@"
+    # `curl | bash` feeds the script through stdin, so sudo cannot read a
+    # password from stdin. When a controlling terminal exists, explicitly
+    # attach it so normal interactive sudo authentication still works. In
+    # cron/CI or other headless runs, stay non-interactive and fail quickly.
+    if [ -r /dev/tty ]; then
+      sudo "$@" </dev/tty
+    else
+      sudo -n "$@"
+    fi
   else
     return 1
   fi
@@ -383,8 +391,8 @@ show_install_error() {
     say "依赖安装失败：dpkg 上次操作被中断。" "Dependency installation failed: dpkg was interrupted."
     say "请先运行：sudo dpkg --configure -a" "Run this first: sudo dpkg --configure -a"
   elif [[ "$summary" =~ [Pp]assword[[:space:]]+is[[:space:]]+required|[Tt]erminal[[:space:]]+is[[:space:]]+required|[Pp]ermission[[:space:]]+denied|[Mm]ust[[:space:]]+be[[:space:]]+run[[:space:]]+as[[:space:]]+root ]]; then
-    say "依赖安装未执行：当前用户没有可用的 sudo 权限。" "Dependency installation was not performed: usable sudo permission is unavailable."
-    say "请先运行：sudo -v，然后重新运行 ABS；也可使用 root 用户，或加 -n 跳过自动安装。" "Run 'sudo -v' first and rerun ABS; alternatively use root or pass -n to skip automatic installation."
+    say "依赖安装未执行：当前用户没有可用的 sudo 权限，或 sudo 密码验证未完成。" "Dependency installation was not performed: sudo permission is unavailable or password authentication did not complete."
+    say "在交互式终端中重新运行 ABS 会自动询问 sudo 密码；无终端运行请先配置免密 sudo，或加 -n 跳过自动安装。" "Rerun ABS from an interactive terminal to allow a sudo password prompt; headless runs need passwordless sudo or -n to skip automatic installation."
   elif [ -n "$summary" ]; then
     say "依赖安装失败：$summary" "Dependency installation failed: $summary"
   else

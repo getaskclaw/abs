@@ -93,7 +93,7 @@ Run `bash abs.sh --lang en --help` for every option.
 
 ## Installation and network behavior
 
-If dependency installation fails, ABS prints a short cause, a repair hint when known, and the log path. It then continues with an incomplete result. ABS does not run system repair commands such as `dpkg --configure -a` automatically.
+If dependency installation fails, ABS prints a short cause, a repair hint when known, and the log path, then continues with an incomplete result. In an interactive terminal, ABS attaches `sudo` to `/dev/tty`, so `curl | bash` can still prompt for the sudo password; headless runs use non-interactive sudo and fail quickly. ABS does not run system repair commands such as `dpkg --configure -a` automatically.
 
 The default Cloudflare check downloads 10 MB and uploads 5 MB of zero data. Each attempt has a 45-second timeout and one retry. Use `--network-full` or `--network-yabs` for broader network checks.
 

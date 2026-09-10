@@ -195,8 +195,8 @@ class AbsTests(unittest.TestCase):
                 capture_output=True,
                 check=True,
             )
-        self.assertIn("依赖安装未执行：当前用户没有可用的 sudo 权限", proc.stdout)
-        self.assertIn("sudo -v", proc.stdout)
+        self.assertIn("依赖安装未执行：当前用户没有可用的 sudo 权限，或 sudo 密码验证未完成", proc.stdout)
+        self.assertIn("交互式终端", proc.stdout)
         self.assertIn("-n", proc.stdout)
 
     def test_cloudflare_download_retries_once(self) -> None:
