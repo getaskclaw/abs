@@ -2,15 +2,15 @@
 
 [English](README.en.md)
 
-ABS 测试 Linux VPS 的 CPU、内存、磁盘和 fsync，并给出一个简单结论：**保留、谨慎保留、不建议保留或测试不完整**。
+在租一台 Linux VPS（或续费）之前跑一下，就能知道这机器 CPU 快不快、内存够不够、磁盘写起来稳不稳。ABS 把这些测一遍，给一个分数和一个结论：**保留、谨慎保留、不建议保留**，或者**测试不完整**（某些测试没跑成，别拿这个分数下结论）。
 
-## 运行
+## 跑一下
 
 ```bash
 curl -fsSL https://askclaw.top/abs.sh | bash
 ```
 
-默认输出中文，通常在安装依赖后 3 分钟内完成。脚本可能安装 `sysbench`、`fio`、`python3` 和 `curl`。
+默认输出中文，装完依赖后 3 分钟内出结果。脚本可能用 `sudo` 装 `sysbench`、`fio`、`python3`、`curl`。
 
 ```bash
 # 不安装缺失工具
@@ -20,7 +20,7 @@ curl -fsSL https://askclaw.top/abs.sh | bash -s -- -n
 curl -fsSL https://askclaw.top/abs.sh | bash -s -- --lang en
 ```
 
-> `curl | bash` 会直接执行下载内容。需要先检查时：
+> `curl | bash` 会直接执行下载内容。想先看看脚本内容：
 >
 > ```bash
 > curl -fsSLo abs.sh https://askclaw.top/abs.sh
@@ -28,7 +28,7 @@ curl -fsSL https://askclaw.top/abs.sh | bash -s -- --lang en
 > bash abs.sh
 > ```
 
-## 结果
+## 读结果
 
 ```text
 ===================== ABS 结果 =====================
@@ -39,30 +39,26 @@ curl -fsSL https://askclaw.top/abs.sh | bash -s -- --lang en
 ====================================================
 ```
 
-- **保留**：本地性能整体良好
-- **谨慎保留**：可以使用，但有明显短板
-- **不建议保留**：本地性能较弱或存在严重瓶颈
-- **测试不完整**：CPU、内存、磁盘或 fsync 测试缺失
+- **完整** = 所有核心测试都跑完了（不代表快）
+- **不完整，不能比较** = 有测试没跑成，分数不能和其他机器直接比
+- **保留 / 谨慎保留 / 不建议保留** = 按本地分数和一个“最弱分项”红线给出的建议
+- **测试不完整** = CPU、内存、磁盘或 fsync 有缺项
 
-`完整` 只表示核心测试全部完成，不表示机器一定很快。`不完整，不能比较` 不应与完整结果直接比较。
+## 测了什么
 
-## 测试内容和评分
-
-- **CPU**：单线程和全线程吞吐
-- **内存**：顺序读取和写入
-- **磁盘**：顺序读写、4K QD1 和压力测试
-- **fsync**：4K 持久化写入
-- **网络**：Cloudflare 简测，仅供参考
+- **CPU**：单线程、全线程吞吐
+- **内存**：顺序读写
+- **磁盘**：顺序读写、4K 随机小 IO（QD1=队列深度 1，接近日常零散读写）、多线程压力
+- **fsync**：4K 强制落盘写入（数据库/文件真正写完的指标，比“看起来写完了”更接近真实持久化）
+- **网络**：Cloudflare 简单测速，仅供参考，**不计分**
 
 ```text
-40% CPU + 15% 内存 + 30% 4K QD1 磁盘 + 15% fsync
+总分 = 40% CPU + 15% 内存 + 30% 4K QD1 磁盘 + 15% fsync
 ```
 
-网络不计入总分。ABS 还检查最弱分项：分项低于 250 时“不建议保留”，低于 500 时最多“谨慎保留”。
+另外有一条底线规则：任一分项分数低于 250 直接「不建议保留」；低于 500 时最多只能到「谨慎保留」。也就是说，一个很弱的短板会拖累整体评价。
 
-比较机器时，应使用相同的 ABS 版本、测试模式、线程数、fio 大小和 `DIRECT` 设置。只有 `DIRECT=1` 的完整本地结果可直接比较。
-
-评分公式、参考常数、适用边界和校准局限见 [docs/scoring.md](docs/scoring.md)。
+评分公式、参考常数、适用边界和已知局限见 [docs/scoring.md](docs/scoring.md)。
 
 ## 常用命令
 
@@ -73,64 +69,82 @@ curl -fsSL https://askclaw.top/abs.sh | bash -s -- --quick
 # 完整测试，约 5–8 分钟
 curl -fsSL https://askclaw.top/abs.sh | bash -s -- --full
 
-# 跳过网络；本地得分仍有效
+# 跳过网络测速（本地分数仍有效）
 curl -fsSL https://askclaw.top/abs.sh | bash -s -- --no-network
 
-# 保存 JSON
+# 结果存成 JSON
 curl -fsSL https://askclaw.top/abs.sh | bash -s -- --json-file result.json
 
-# Cloudflare + 3 个公共 iperf3 区域
+# 网络测试加强版：Cloudflare + 3 个公共 iperf3 节点
 curl -fsSL https://askclaw.top/abs.sh | bash -s -- --network-full
 ```
 
-完整选项见：
+全部选项：`bash abs.sh --help`
 
-```bash
-bash abs.sh --help
-```
+## 比较两台 VPS
 
-## 语言和机器输出
+两台机器**只有在以下条件全部一致时，分数才能直接比**：
 
-- 终端默认中文；使用 `--lang en` 或 `ABS_LANG=en` 切换英文
-- `results.tsv` 的指标名、`result.json` 的字段和值保持英文，便于程序读取
-- 切换终端语言不会改变评分或机器输出格式
+- ABS 版本相同
+- 用的测试模式相同（`--quick` / 默认 / `--full`）
+- 线程数 `-t` 相同
+- fio 测试文件大小 `-z` 相同
+- `DIRECT` 设置相同——`DIRECT=1`（默认）跳过文件系统缓存，直接测磁盘；`DIRECT=0` 走缓存，结果会虚高且**不能和 DIRECT=1 的结果比**
+- 两边都是「完整」结果；任意一边是「不完整，不能比较」就不要比
 
-## 安装和网络
+## 终端语言 vs. 机器输出
 
-依赖安装失败时，ABS 会显示简短原因、修复提示和日志路径，然后继续生成不完整结果。交互式终端中，ABS 会把 `sudo` 连接到 `/dev/tty`，因此 `curl | bash` 也可以正常询问 sudo 密码；无终端运行则使用非交互 sudo 并快速失败。ABS 不会自行运行 `dpkg --configure -a` 等系统修复命令。
+- 终端显示默认中文，`--lang en` 或 `ABS_LANG=en` 切英文
+- `results.tsv` 的指标名、`result.json` 的字段和值始终是英文，方便脚本读取
+- 切语言不会改变分数和文件格式
 
-默认网络简测：
+## 依赖安装失败怎么办
+
+ABS 会打印一个简短原因、一条修复建议和日志路径，然后继续跑出一个「不完整」结果，而不是无声退出。在交互式终端里，它把 `sudo` 接到 `/dev/tty`，所以 `curl | bash` 也能正常输密码；无人值守环境用非交互 sudo、失败就跳过。ABS 不会自动执行 `dpkg --configure -a` 这种系统级修复命令。
+
+## 网络检查做了什么
+
+默认只做 Cloudflare 简测：
 
 - 从 Cloudflare 下载 10 MB
-- 上传 5 MB 零数据
-- 单次超时 45 秒
-- 失败后重试一次
+- 上传 5 MB 全零数据（测速用，不传真实文件）
+- 单次超时 45 秒，失败自动重试一次
 
-更完整的网络测试使用 `--network-full` 或 `--network-yabs`。
+想要更完整的网络画像，用 `--network-full` 或 `--network-yabs` 加公共 iperf3 节点。
 
-## 安全和文件
+## 安全和文件位置
 
-- ABS 不上传跑分结果
-- 日志保存在私有随机目录 `/tmp/abs.*`
-- 磁盘测试文件放在独立临时目录，结束后删除
-- 原有 `abs.test*` 和 `abs-dd.test` 文件不会被删除
-- `fio` 缺失时使用 `dd` 粗略检查，但不计分
-- Alpine 最小系统需要先安装 Bash：`apk add bash`
+- ABS **不会上传跑分结果**
+- 日志写在 `/tmp/abs.*` 随机私有目录
+- 磁盘测试文件放在一个单独的临时目录，跑完删掉
+- 已存在的 `abs.test*`、`abs-dd.test` 文件**不会**被删除
+- 没有 `fio` 时退而用 `dd` 粗略测一下，但**不计入总分**
+- Alpine 最小镜像要先装 bash：`apk add bash`
 
-中国网络无法访问 GitHub Raw 时：
+**中国网络拉不到 GitHub Raw 时**，用 jsDelivr 镜像：
 
 ```bash
 curl --resolve cdn.jsdelivr.net:443:104.16.175.226 \
   -fsSL https://cdn.jsdelivr.net/gh/getaskclaw/abs@main/abs.sh | bash -s -- -n
 ```
 
-## 开发测试
+## 术语速查
+
+| 词 | 通俗意思 |
+|---|---|
+| `fsync` | 强制把数据真正写入磁盘（不是只写到内存缓存）。数据库、文件保存靠它才算写完 |
+| `QD1` | 队列深度 1：一次只发一个 IO 请求，接近日常零散小读写 |
+| `p95` | 95 分位延迟：95% 的请求比这个数快，反映“最坏那一批”的速度 |
+| `DIRECT` | fio 的直连模式：1=跳过系统缓存测真实磁盘，0=走缓存（数值会虚高） |
+| `OpenVZ` | 一种虚拟化方式；它的磁盘结果可能被缓存影响，建议再用 `--full` 验证 |
+
+## 开发
 
 ```bash
 python3 -m unittest -v tests/test_abs.py
 ```
 
-GitHub Actions 会在 push 和 pull request 时运行测试。
+push 和 PR 都会触发 GitHub Actions 跑这套测试。
 
 ## License
 
