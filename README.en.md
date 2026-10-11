@@ -64,6 +64,8 @@ Network never changes the headline score. ABS also applies a component floor: be
 
 Compare results only when ABS version, profile, thread count, fio size, and `DIRECT` setting match. Only a full local result with `DIRECT=1` is directly comparable.
 
+Scoring formulas, reference constants, applicability limits, and calibration caveats are documented in [docs/scoring.md](docs/scoring.md).
+
 ## Common commands
 
 ```bash
