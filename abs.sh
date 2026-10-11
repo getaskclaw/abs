@@ -507,6 +507,7 @@ zh_metric() {
       suffix="${metric#Memory write (}"; suffix="${suffix% threads)}"; printf '内存写入（%s 线程）' "$suffix" ;;
     "Memory read") printf '内存读取' ;;
     "Memory write") printf '内存写入' ;;
+    "CPU steal (1s sample)") printf 'CPU steal（1 秒采样）' ;;
     "sysbench CPU/memory") printf 'sysbench CPU/内存测试' ;;
     "fio disk tests") printf 'fio 磁盘测试' ;;
     "fio prepare") printf 'fio 测试文件准备' ;;
@@ -655,6 +656,7 @@ zh_result() {
   text="${text//p95/P95}"
   [[ "$text" == R\ * ]] && text="读 ${text#R }"
   text="${text// \/ W / \/ 写 }"
+  text="${text//(informational; host contention)/（仅供参考；宿主机争用）}"
   text="${text//(not scored)/（不计分）}"
   text="${text//(buffered; not scored)/（缓存模式，不计分）}"
   printf '%s' "$text"
@@ -1352,6 +1354,24 @@ run_iperf_cmd() {
   abs_timeout "$budget" "$@"
 }
 
+cpu_steal_pct() {
+  # Context metric (not scored): steal% = vCPU time the hypervisor gave to
+  # other guests. Explains depressed CPU scores on contended/burstable hosts.
+  # Linux-only: /proc/stat has no steal column on macOS/BSD.
+  local stat="${1:-/proc/stat}" stat2="${2:-${1:-/proc/stat}}"
+  local s1 t1 s2 t2
+  read -r s1 t1 <<EOF
+$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; print $9, total; exit}' "$stat" 2>/dev/null)
+EOF
+  [ -n "${s1:-}" ] || return 1
+  sleep "${3:-1}"
+  read -r s2 t2 <<EOF
+$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; print $9, total; exit}' "$stat2" 2>/dev/null)
+EOF
+  [ -n "${s2:-}" ] || return 1
+  awk -v ds="$((s2 - s1))" -v dt="$((t2 - t1))" 'BEGIN { if (dt <= 0) exit 1; printf "%.1f", ds * 100 / dt }'
+}
+
 parse_iperf_bps() {
   python3 - "$1" "$2" <<'PY'
 import json, sys
@@ -1800,6 +1820,11 @@ if have sysbench; then
     fi
   else
     add "CPU all threads ($T)" "FAILED; see $LAST_LOG"
+  fi
+
+  # shellcheck disable=SC2119
+  if steal_pct="$(cpu_steal_pct)"; then
+    add "CPU steal (1s sample)" "${steal_pct}% (informational; host contention)"
   fi
 
   if run_log mem-read sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-scope=local --memory-block-size="$MEM_BLOCK" --memory-total-size=100T --memory-oper=read --memory-access-mode=seq run; then
