@@ -694,6 +694,31 @@ class AbsTests(unittest.TestCase):
             )
         self.assertTrue(proc.stdout.startswith("FULL 1000"), proc.stdout)
 
+    def test_cpu_steal_pct_from_proc_stat(self) -> None:
+        fn = extract_between(self.source, "cpu_steal_pct() {", "\n}\n\nparse_iperf_bps()") + "\n}\n"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            before = root / "stat1"
+            after = root / "stat2"
+            # /proc/stat cpu fields: user nice system idle iowait irq softirq steal ...
+            before.write_text("cpu  100 0 100 700 0 0 0 0 0 0\n", encoding="utf-8")
+            after.write_text("cpu  100 0 100 750 0 0 0 50 0 0\n", encoding="utf-8")
+            proc = subprocess.run(
+                ["bash", "-c", fn + f'\ncpu_steal_pct {before} {after} 0'],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(proc.stdout.strip(), "50.0")
+            # macOS-style /proc/stat absence (or no steal column) -> no output, rc != 0
+            missing = root / "stat3"
+            missing.write_text("cpu  100 0 100 700 0 0 0\n", encoding="utf-8")
+            proc = subprocess.run(
+                ["bash", "-c", fn + f'\ncpu_steal_pct {missing} {missing} 0'],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+
     def test_malformed_fio_json_is_failed_not_zero(self) -> None:
         metric = extract_between(self.source, "fio_metric() {", "\n}\n\nabs_local_score()") + "\n}\n"
         with tempfile.NamedTemporaryFile("w", suffix=".json") as bad:

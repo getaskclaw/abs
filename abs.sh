@@ -84,6 +84,7 @@ ABS v$VERSION — AskClaw VPS 跑分脚本
   -z, --size SIZE      fio 测试文件大小，如 512M、2G、8G
   -t, --threads N      CPU/内存测试线程数
   -n, --no-install     不安装缺失工具
+  --install            显式允许用 sudo 安装缺失工具（默认即启用）
   --strict             测试不完整时以非零状态退出
   --lang zh|en         输出语言，默认 zh
   --net-info           查询 IPv4/IPv6 和外部 IP/ASN
@@ -122,6 +123,7 @@ Options:
   -z, --size SIZE      fio test file size, e.g. 512M, 2G, 8G; default auto
   -t, --threads N      CPU/memory threads; default detected vCPU ($T)
   -n, --no-install     do not install missing packages
+  --install            explicitly allow installing missing tools with sudo (default on)
   --strict             exit non-zero when the score is incomplete
   --lang zh|en         output language; default zh
   --net-info           check IPv4/IPv6 and external IP/ASN
@@ -165,6 +167,7 @@ while [ "$#" -gt 0 ]; do
       shift; [ "$#" -gt 0 ] || die "缺少参数值：-t/--threads" "Missing value for -t/--threads"
       T="$1" ;;
     -n|--no-install) INSTALL=0 ;;
+    --install) INSTALL=1 ;;
     --strict) STRICT=1 ;;
     --lang)
       shift; [ "$#" -gt 0 ] || die "缺少参数值：--lang" "Missing value for --lang"
@@ -446,7 +449,7 @@ install_tools() {
 
   INSTALL_ATTEMPTED="1"
   say "缺少工具：$missing" "Missing tools: $missing"
-  say "正在尝试安装；使用 -n/--no-install 可跳过安装。" "Installing missing tools when possible... use -n/--no-install to skip installation."
+  say "将通过系统包管理器用 sudo 安装：$missing（-n/--no-install 可跳过）" "Will install via your system package manager with sudo: $missing (-n/--no-install to skip)"
 
   local curl_pkg="" iperf_pkg=""
   if [ "$NETWORK" = "1" ] || [ "$NET_INFO" = "1" ]; then
@@ -507,6 +510,7 @@ zh_metric() {
       suffix="${metric#Memory write (}"; suffix="${suffix% threads)}"; printf '内存写入（%s 线程）' "$suffix" ;;
     "Memory read") printf '内存读取' ;;
     "Memory write") printf '内存写入' ;;
+    "CPU steal (1s sample)") printf 'CPU steal（1 秒采样）' ;;
     "sysbench CPU/memory") printf 'sysbench CPU/内存测试' ;;
     "fio disk tests") printf 'fio 磁盘测试' ;;
     "fio prepare") printf 'fio 测试文件准备' ;;
@@ -655,6 +659,7 @@ zh_result() {
   text="${text//p95/P95}"
   [[ "$text" == R\ * ]] && text="读 ${text#R }"
   text="${text// \/ W / \/ 写 }"
+  text="${text//(informational; host contention)/（仅供参考；宿主机争用）}"
   text="${text//(not scored)/（不计分）}"
   text="${text//(buffered; not scored)/（缓存模式，不计分）}"
   printf '%s' "$text"
@@ -1352,6 +1357,24 @@ run_iperf_cmd() {
   abs_timeout "$budget" "$@"
 }
 
+cpu_steal_pct() {
+  # Context metric (not scored): steal% = vCPU time the hypervisor gave to
+  # other guests. Explains depressed CPU scores on contended/burstable hosts.
+  # Linux-only: /proc/stat has no steal column on macOS/BSD.
+  local stat="${1:-/proc/stat}" stat2="${2:-${1:-/proc/stat}}"
+  local s1 t1 s2 t2
+  read -r s1 t1 <<EOF
+$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; print $9, total; exit}' "$stat" 2>/dev/null)
+EOF
+  [ -n "${s1:-}" ] || return 1
+  sleep "${3:-1}"
+  read -r s2 t2 <<EOF
+$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; print $9, total; exit}' "$stat2" 2>/dev/null)
+EOF
+  [ -n "${s2:-}" ] || return 1
+  awk -v ds="$((s2 - s1))" -v dt="$((t2 - t1))" 'BEGIN { if (dt <= 0) exit 1; printf "%.1f", ds * 100 / dt }'
+}
+
 parse_iperf_bps() {
   python3 - "$1" "$2" <<'PY'
 import json, sys
@@ -1800,6 +1823,10 @@ if have sysbench; then
     fi
   else
     add "CPU all threads ($T)" "FAILED; see $LAST_LOG"
+  fi
+
+  if steal_pct="$(cpu_steal_pct /proc/stat /proc/stat 1)"; then
+    add "CPU steal (1s sample)" "${steal_pct}% (informational; host contention)"
   fi
 
   if run_log mem-read sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-scope=local --memory-block-size="$MEM_BLOCK" --memory-total-size=100T --memory-oper=read --memory-access-mode=seq run; then
