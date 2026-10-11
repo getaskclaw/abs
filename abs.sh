@@ -1919,7 +1919,7 @@ add_note "Privacy note" "No result upload. Default network sanity uses Cloudflar
 ELAPSED_SECONDS=$(( $(date +%s) - TIME_START_EPOCH ))
 if have python3; then
   SYSBENCH_VER="$(sysbench --version 2>/dev/null | awk 'NR==1{print $2}')"
-  FIO_VER="$([ -n "$FIO_BIN" ] && "$FIO_BIN" --version 2>/dev/null | sed 's/^fio-//' || true)"
+  if [ -n "$FIO_BIN" ]; then FIO_VER="$("$FIO_BIN" --version 2>/dev/null | sed 's/^fio-//')"; else FIO_VER=""; fi
   PYTHON_VER="$(python3 --version 2>/dev/null | awk '{print $2}')"
   SCRIPT_SHA256="$([ -f "$0" ] && { sha256sum "$0" 2>/dev/null || shasum -a 256 "$0" 2>/dev/null; } | awk 'NR==1{print $1}')"
   [ -z "${SCRIPT_SHA256:-}" ] && SCRIPT_SHA256="n/a"
