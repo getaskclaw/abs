@@ -62,6 +62,8 @@ curl -fsSL https://askclaw.top/abs.sh | bash -s -- --lang en
 
 比较机器时，应使用相同的 ABS 版本、测试模式、线程数、fio 大小和 `DIRECT` 设置。只有 `DIRECT=1` 的完整本地结果可直接比较。
 
+评分公式、参考常数、适用边界和校准局限见 [docs/scoring.md](docs/scoring.md)。
+
 ## 常用命令
 
 ```bash

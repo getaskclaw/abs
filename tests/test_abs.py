@@ -269,7 +269,7 @@ class AbsTests(unittest.TestCase):
 
     def test_verdict_reasons_match_verdict_code(self) -> None:
         match = re.search(
-            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" <<'PY'\n(.*?)\nPY\n\}",
+            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" \"\$KV\" <<'PY'\n(.*?)\nPY\n\}",
             self.source,
             re.S,
         )
@@ -335,7 +335,7 @@ class AbsTests(unittest.TestCase):
 
     def test_component_floor_threshold_boundaries(self) -> None:
         match = re.search(
-            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" <<'PY'\n(.*?)\nPY\n\}",
+            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" \"\$KV\" <<'PY'\n(.*?)\nPY\n\}",
             self.source,
             re.S,
         )
@@ -590,6 +590,160 @@ class AbsTests(unittest.TestCase):
             self.assertFalse(result["score"]["comparable"])
             self.assertEqual(result["score"]["missing_components"], ["disk-buffered", "fsync-buffered"])
             self.assertEqual(result["verdict"]["code"], "INCOMPLETE")
+
+    def test_missing_cpu_eps_cannot_score_from_p95_label(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bin_dir = root / "bin"
+            data_dir = root / "data"
+            log_dir = root / "logs"
+            bin_dir.mkdir()
+            data_dir.mkdir()
+            write_fake_tools(bin_dir)
+            # sysbench exits 0 but emits only a percentile line — no EPS field.
+            sysbench = bin_dir / "sysbench"
+            sysbench.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"${1:-}\" = \"--version\" ]; then echo 'sysbench 1.0.20'; exit 0; fi\n"
+                "case \" ${*} \" in\n"
+                "  *\" memory \"*) echo '102400.00 MiB transferred (30000.00 MiB/sec)' ;;\n"
+                "  *) echo '95th percentile: 1.00' ;;\n"
+                "esac\n"
+            )
+            sysbench.chmod(0o755)
+            result_json = root / "result.json"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "DIR": str(data_dir),
+                    "LOGDIR": str(log_dir),
+                    "INSTALL": "0",
+                    "ABS_LANG": "en",
+                }
+            )
+            proc = subprocess.run(
+                [str(SCRIPT), "--quick", "-n", "--no-network", "--json-file", str(result_json)],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            result = json.loads(result_json.read_text(encoding="utf-8"))
+            self.assertEqual(result["score"]["status"], "partial")
+            self.assertFalse(result["score"]["comparable"])
+            self.assertIn("cpu", result["score"]["missing_components"])
+            metrics = {row["metric"]: row["result"] for row in result["results"]}
+            self.assertTrue(metrics["CPU single thread"].startswith("FAILED"), metrics["CPU single thread"])
+            all_threads = next(v for k, v in metrics.items() if k.startswith("CPU all threads"))
+            self.assertTrue(all_threads.startswith("FAILED"), all_threads)
+
+    def test_memory_tests_use_per_thread_scope(self) -> None:
+        self.assertIn("--memory-scope=local", self.source)
+        self.assertNotIn("--memory-block-size=1M", self.source)
+        self.assertIn('--memory-block-size="$MEM_BLOCK"', self.source)
+
+    def test_scoring_prefers_metrics_tsv_over_display_text(self) -> None:
+        fn = extract_between(self.source, "abs_local_score() {", "\n}\n\nnetwork_score()") + "\n}\n"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            results = root / "results.tsv"
+            kv = root / "metrics.tsv"
+            comp = root / "components.tsv"
+            # Display text claims inflated numbers; metrics.tsv holds the real
+            # measured values. The scorer must use metrics.tsv.
+            results.write_text(
+                "Metric\tResult\n"
+                "CPU single thread\t99999 events/s, p95 0.01 ms\n"
+                "CPU all threads (8)\t99999 events/s, p95 0.01 ms\n"
+                "Memory read (8 threads)\t99999 MiB/sec\n"
+                "Memory write (8 threads)\t99999 MiB/sec\n"
+                "Disk random read 4K QD1\t99999 IOPS\n"
+                "Disk random write 4K QD1\t99999 IOPS\n"
+                "Disk durable write 4K fsync\t99999 writes/s\n",
+                encoding="utf-8",
+            )
+            kv.write_text(
+                "Metric\tValue\n"
+                "CPU single thread\t400\n"
+                "CPU all threads (8)\t3200\n"
+                "Memory read (8 threads)\t30000\n"
+                "Memory write (8 threads)\t20000\n"
+                "Disk random read 4K QD1\t10000\n"
+                "Disk random write 4K QD1\t5000\n"
+                "Disk durable write 4K fsync\t2000\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "RESULTS": str(results),
+                    "KV": str(kv),
+                    "COMPONENTS_FILE": str(comp),
+                    "T": "8",
+                    "DIRECT": "1",
+                }
+            )
+            proc = subprocess.run(
+                ["bash", "-c", fn + "\nabs_local_score"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        self.assertTrue(proc.stdout.startswith("FULL 1000"), proc.stdout)
+
+    def test_malformed_fio_json_is_failed_not_zero(self) -> None:
+        metric = extract_between(self.source, "fio_metric() {", "\n}\n\nabs_local_score()") + "\n}\n"
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as bad:
+            bad.write("{not json")
+            bad.flush()
+            proc = subprocess.run(
+                ["bash", "-c", metric + '\nfio_metric read_iops "$1"', "bash", bad.name],
+                text=True,
+                capture_output=True,
+            )
+        self.assertEqual(proc.stdout.strip(), "FAILED")
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_strict_mode_exits_nonzero_on_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bin_dir = root / "bin"
+            data_dir = root / "data"
+            log_dir = root / "logs"
+            bin_dir.mkdir()
+            data_dir.mkdir()
+            write_fake_tools(bin_dir)
+            sysbench = bin_dir / "sysbench"
+            sysbench.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"${1:-}\" = \"--version\" ]; then echo 'sysbench 1.0.20'; exit 0; fi\n"
+                "exit 1\n"
+            )
+            sysbench.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "DIR": str(data_dir),
+                    "LOGDIR": str(log_dir),
+                    "INSTALL": "0",
+                    "ABS_LANG": "en",
+                }
+            )
+            lax = subprocess.run(
+                [str(SCRIPT), "--quick", "-n", "--no-network"],
+                env=env, text=True, capture_output=True, timeout=60,
+            )
+            self.assertEqual(lax.returncode, 0)
+            strict = subprocess.run(
+                [str(SCRIPT), "--quick", "-n", "--no-network", "--strict"],
+                env=env, text=True, capture_output=True, timeout=60,
+            )
+            self.assertEqual(strict.returncode, 1)
+            self.assertIn("INCOMPLETE", strict.stdout)
 
     def test_json_copy_failure_returns_nonzero_without_false_success(self) -> None:
         with tempfile.TemporaryDirectory() as td:
