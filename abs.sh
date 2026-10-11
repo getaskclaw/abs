@@ -1825,8 +1825,7 @@ if have sysbench; then
     add "CPU all threads ($T)" "FAILED; see $LAST_LOG"
   fi
 
-  # shellcheck disable=SC2119
-  if steal_pct="$(cpu_steal_pct)"; then
+  if steal_pct="$(cpu_steal_pct /proc/stat /proc/stat 1)"; then
     add "CPU steal (1s sample)" "${steal_pct}% (informational; host contention)"
   fi
 
