@@ -591,6 +591,54 @@ class AbsTests(unittest.TestCase):
             self.assertEqual(result["score"]["missing_components"], ["disk-buffered", "fsync-buffered"])
             self.assertEqual(result["verdict"]["code"], "INCOMPLETE")
 
+    def test_missing_cpu_eps_cannot_score_from_p95_label(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bin_dir = root / "bin"
+            data_dir = root / "data"
+            log_dir = root / "logs"
+            bin_dir.mkdir()
+            data_dir.mkdir()
+            write_fake_tools(bin_dir)
+            # sysbench exits 0 but emits only a percentile line — no EPS field.
+            sysbench = bin_dir / "sysbench"
+            sysbench.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"${1:-}\" = \"--version\" ]; then echo 'sysbench 1.0.20'; exit 0; fi\n"
+                "case \" ${*} \" in\n"
+                "  *\" memory \"*) echo '102400.00 MiB transferred (30000.00 MiB/sec)' ;;\n"
+                "  *) echo '95th percentile: 1.00' ;;\n"
+                "esac\n"
+            )
+            sysbench.chmod(0o755)
+            result_json = root / "result.json"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "DIR": str(data_dir),
+                    "LOGDIR": str(log_dir),
+                    "INSTALL": "0",
+                    "ABS_LANG": "en",
+                }
+            )
+            proc = subprocess.run(
+                [str(SCRIPT), "--quick", "-n", "--no-network", "--json-file", str(result_json)],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            result = json.loads(result_json.read_text(encoding="utf-8"))
+            self.assertEqual(result["score"]["status"], "partial")
+            self.assertFalse(result["score"]["comparable"])
+            self.assertIn("cpu", result["score"]["missing_components"])
+            metrics = {row["metric"]: row["result"] for row in result["results"]}
+            self.assertTrue(metrics["CPU single thread"].startswith("FAILED"), metrics["CPU single thread"])
+            all_threads = next(v for k, v in metrics.items() if k.startswith("CPU all threads"))
+            self.assertTrue(all_threads.startswith("FAILED"), all_threads)
+
     def test_json_copy_failure_returns_nonzero_without_false_success(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

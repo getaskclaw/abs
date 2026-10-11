@@ -201,6 +201,8 @@ case "$PROFILE" in
 esac
 
 is_pos_int() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
+
+is_num() { [[ "${1:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
 valid_port_range() {
   local range="${1:-}" low high
   [[ "$range" =~ ^([0-9]{1,5})(-([0-9]{1,5}))?$ ]] || return 1
@@ -1628,25 +1630,45 @@ fi
 
 if have sysbench; then
   if run_log cpu-1t sysbench cpu --threads=1 --time="$D" --events=0 --percentile=95 --cpu-max-prime="$CPU_PRIME" run; then
-    add "CPU single thread" "$(eps "$LAST_LOG") events/s, p95 $(p95 "$LAST_LOG") ms"
+    cpu_1t_eps="$(eps "$LAST_LOG")"
+    if is_num "$cpu_1t_eps"; then
+      add "CPU single thread" "$cpu_1t_eps events/s, p95 $(p95 "$LAST_LOG") ms"
+    else
+      add "CPU single thread" "FAILED; no events-per-second field; see $LAST_LOG"
+    fi
   else
     add "CPU single thread" "FAILED; see $LAST_LOG"
   fi
 
   if run_log cpu-all sysbench cpu --threads="$T" --time="$D" --events=0 --percentile=95 --cpu-max-prime="$CPU_PRIME" run; then
-    add "CPU all threads ($T)" "$(eps "$LAST_LOG") events/s, p95 $(p95 "$LAST_LOG") ms"
+    cpu_all_eps="$(eps "$LAST_LOG")"
+    if is_num "$cpu_all_eps"; then
+      add "CPU all threads ($T)" "$cpu_all_eps events/s, p95 $(p95 "$LAST_LOG") ms"
+    else
+      add "CPU all threads ($T)" "FAILED; no events-per-second field; see $LAST_LOG"
+    fi
   else
     add "CPU all threads ($T)" "FAILED; see $LAST_LOG"
   fi
 
   if run_log mem-read sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-block-size=1M --memory-total-size=100T --memory-oper=read --memory-access-mode=seq run; then
-    add "Memory read ($T threads)" "$(memspeed "$LAST_LOG")"
+    mem_read="$(memspeed "$LAST_LOG")"
+    if [ -n "$mem_read" ]; then
+      add "Memory read ($T threads)" "$mem_read"
+    else
+      add "Memory read" "FAILED; no throughput field; see $LAST_LOG"
+    fi
   else
     add "Memory read" "FAILED; see $LAST_LOG"
   fi
 
   if run_log mem-write sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-block-size=1M --memory-total-size=100T --memory-oper=write --memory-access-mode=seq run; then
-    add "Memory write ($T threads)" "$(memspeed "$LAST_LOG")"
+    mem_write="$(memspeed "$LAST_LOG")"
+    if [ -n "$mem_write" ]; then
+      add "Memory write ($T threads)" "$mem_write"
+    else
+      add "Memory write" "FAILED; no throughput field; see $LAST_LOG"
+    fi
   else
     add "Memory write" "FAILED; see $LAST_LOG"
   fi
