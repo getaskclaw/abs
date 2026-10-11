@@ -84,6 +84,7 @@ ABS v$VERSION — AskClaw VPS 跑分脚本
   -z, --size SIZE      fio 测试文件大小，如 512M、2G、8G
   -t, --threads N      CPU/内存测试线程数
   -n, --no-install     不安装缺失工具
+  --install            显式允许用 sudo 安装缺失工具（默认即启用）
   --strict             测试不完整时以非零状态退出
   --lang zh|en         输出语言，默认 zh
   --net-info           查询 IPv4/IPv6 和外部 IP/ASN
@@ -122,6 +123,7 @@ Options:
   -z, --size SIZE      fio test file size, e.g. 512M, 2G, 8G; default auto
   -t, --threads N      CPU/memory threads; default detected vCPU ($T)
   -n, --no-install     do not install missing packages
+  --install            explicitly allow installing missing tools with sudo (default on)
   --strict             exit non-zero when the score is incomplete
   --lang zh|en         output language; default zh
   --net-info           check IPv4/IPv6 and external IP/ASN
@@ -165,6 +167,7 @@ while [ "$#" -gt 0 ]; do
       shift; [ "$#" -gt 0 ] || die "缺少参数值：-t/--threads" "Missing value for -t/--threads"
       T="$1" ;;
     -n|--no-install) INSTALL=0 ;;
+    --install) INSTALL=1 ;;
     --strict) STRICT=1 ;;
     --lang)
       shift; [ "$#" -gt 0 ] || die "缺少参数值：--lang" "Missing value for --lang"
@@ -446,7 +449,7 @@ install_tools() {
 
   INSTALL_ATTEMPTED="1"
   say "缺少工具：$missing" "Missing tools: $missing"
-  say "正在尝试安装；使用 -n/--no-install 可跳过安装。" "Installing missing tools when possible... use -n/--no-install to skip installation."
+  say "将通过系统包管理器用 sudo 安装：$missing（-n/--no-install 可跳过）" "Will install via your system package manager with sudo: $missing (-n/--no-install to skip)"
 
   local curl_pkg="" iperf_pkg=""
   if [ "$NETWORK" = "1" ] || [ "$NET_INFO" = "1" ]; then
