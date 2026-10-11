@@ -690,6 +690,8 @@ memspeed() { awk -F'[()]' '/MiB transferred/ {print $2; exit}' "$1"; }
 
 abs_timeout() {
   # Portable timeout (no GNU coreutils dependency, e.g. stock macOS).
+  # Escalates to SIGKILL after a grace period so a stuck child (e.g. uninterruptible
+  # I/O or a process ignoring TERM) cannot hang the whole script forever.
   local secs="$1"; shift
   if [ "$secs" = "0" ]; then
     "$@"
@@ -697,7 +699,12 @@ abs_timeout() {
   fi
   "$@" &
   local pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) &
+  (
+    sleep "$secs"
+    kill -TERM "$pid" 2>/dev/null || exit 0
+    sleep 3
+    kill -KILL "$pid" 2>/dev/null
+  ) &
   local watcher=$!
   local rc=0
   wait "$pid" 2>/dev/null || rc=$?
@@ -1337,8 +1344,12 @@ pick_port() {
 }
 
 run_iperf_cmd() {
-  # Portable watchdog (GNU timeout is absent on stock macOS).
-  abs_timeout 18 "$@"
+  # Portable watchdog (GNU timeout is absent on stock macOS). Budget follows
+  # IPERF_TIME plus connect/handshake slack; a hardcoded 18s would kill any
+  # user-requested run longer than ~13s mid-test and report it as FAILED.
+  local budget=$(( IPERF_TIME + 15 ))
+  [ "$budget" -gt "$ABS_CMD_TIMEOUT" ] && budget="$ABS_CMD_TIMEOUT"
+  abs_timeout "$budget" "$@"
 }
 
 parse_iperf_bps() {
@@ -1430,6 +1441,14 @@ iperf_sanity() {
 dd_fallback() {
   if ! have dd; then
     add "Disk fallback dd" "dd not installed; skipped"
+    return 0
+  fi
+  # The fallback writes 256 MiB unconditionally; refuse to run when the target
+  # filesystem cannot hold it plus headroom, or we would fill the disk.
+  local avail_kb
+  avail_kb="$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2 {print $4+0}')"
+  if [ "${avail_kb:-0}" -lt 393216 ]; then
+    add "Disk fallback dd" "not enough free space for 256 MiB dd test file; skipped"
     return 0
   fi
   local dd_file="$RUN_DIR/abs-dd.test"
@@ -1846,7 +1865,7 @@ if [ -n "$FIO_BIN" ] && have python3; then
 
       if fio_run fio-rand-write-q1 randwrite 4k 1 1 --randrepeat=0; then
         qd1_write_iops="$(fio_metric write_iops)"
-        add "Disk random write 4K QD1" "$qd1_write_iops IOPS, $(fio_metric write_mib) MiB/s, p95 $(fio_metric read_p95_ms) ms" "$qd1_write_iops"
+        add "Disk random write 4K QD1" "$qd1_write_iops IOPS, $(fio_metric write_mib) MiB/s, p95 $(fio_metric write_p95_ms) ms" "$qd1_write_iops"
       else
         add "Disk random write 4K QD1" "FAILED; see $LOGDIR/fio-rand-write-q1.err"
       fi
