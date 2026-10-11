@@ -7,23 +7,23 @@ ABS 测试 Linux VPS 的 CPU、内存、磁盘和 fsync，并给出一个简单�
 ## 运行
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash
+curl -fsSL https://askclaw.top/abs.sh | bash
 ```
 
 默认输出中文，通常在安装依赖后 3 分钟内完成。脚本可能安装 `sysbench`、`fio`、`python3` 和 `curl`。
 
 ```bash
 # 不安装缺失工具
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- -n
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- -n
 
 # 英文输出
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --lang en
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --lang en
 ```
 
 > `curl | bash` 会直接执行下载内容。需要先检查时：
 >
 > ```bash
-> curl -fsSLo abs.sh https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh
+> curl -fsSLo abs.sh https://askclaw.top/abs.sh
 > less abs.sh
 > bash abs.sh
 > ```
@@ -66,19 +66,19 @@ curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -
 
 ```bash
 # 快速检查，约 60 秒
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --quick
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --quick
 
 # 完整测试，约 5–8 分钟
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --full
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --full
 
 # 跳过网络；本地得分仍有效
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --no-network
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --no-network
 
 # 保存 JSON
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --json-file result.json
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --json-file result.json
 
 # Cloudflare + 3 个公共 iperf3 区域
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --network-full
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --network-full
 ```
 
 完整选项见：

@@ -7,23 +7,23 @@ ABS benchmarks CPU, memory, disk, and fsync on a Linux VPS, then gives one simpl
 ## Run
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash
+curl -fsSL https://askclaw.top/abs.sh | bash
 ```
 
 Terminal output is Chinese by default. A normal run usually finishes within three minutes after dependencies are installed. ABS may install `sysbench`, `fio`, `python3`, and `curl`.
 
 ```bash
 # English output
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --lang en
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --lang en
 
 # Do not install missing tools
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- -n
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- -n
 ```
 
 > `curl | bash` executes downloaded code directly. To inspect it first:
 >
 > ```bash
-> curl -fsSLo abs.sh https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh
+> curl -fsSLo abs.sh https://askclaw.top/abs.sh
 > less abs.sh
 > bash abs.sh --lang en
 > ```
@@ -68,19 +68,19 @@ Compare results only when ABS version, profile, thread count, fio size, and `DIR
 
 ```bash
 # Quick check, about 60 seconds
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --quick
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --quick
 
 # Full test, about 5–8 minutes
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --full
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --full
 
 # Skip network; the local score remains valid
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --no-network
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --no-network
 
 # Save JSON
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --json-file result.json
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --json-file result.json
 
 # Cloudflare plus three public iperf3 regions
-curl -fsSL https://raw.githubusercontent.com/getaskclaw/abs/main/abs.sh | bash -s -- --network-full
+curl -fsSL https://askclaw.top/abs.sh | bash -s -- --network-full
 ```
 
 Run `bash abs.sh --lang en --help` for every option.
