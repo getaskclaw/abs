@@ -286,7 +286,9 @@ fi
 RESULTS="$LOGDIR/results.tsv"
 JSON_RESULT="$LOGDIR/result.json"
 COMPONENTS_FILE="$LOGDIR/components.tsv"
+KV="$LOGDIR/metrics.tsv"
 printf 'Metric\tResult\n' > "$RESULTS"
+printf 'Metric\tValue\n' > "$KV"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -665,6 +667,12 @@ add() {
     printf '%-48s %s\n' "$1" "$2"
   fi
   printf '%s\t%s\n' "$1" "$2" >> "$RESULTS"
+  # Optional third arg: the raw numeric value behind the display text.
+  # Scoring reads metrics.tsv first so it never has to re-parse prose
+  # (the class of bug where 'p95 1.00' scored as throughput).
+  if [ -n "${3:-}" ] && is_num "$3"; then
+    printf '%s\t%s\n' "$1" "$3" >> "$KV"
+  fi
 }
 
 add_note() {
@@ -757,7 +765,7 @@ fio_run() {
 
   args+=("$@")
 
-  if "$FIO_BIN" "${args[@]}" >"$LAST_JSON" 2>"$err"; then
+  if abs_timeout "$ABS_CMD_TIMEOUT" "$FIO_BIN" "${args[@]}" >"$LAST_JSON" 2>"$err"; then
     return 0
   fi
   return 1
@@ -865,7 +873,7 @@ PY
 }
 
 abs_local_score() {
-  ABS_COMPONENTS_FILE="$COMPONENTS_FILE" python3 - "$RESULTS" "$T" "$DIRECT" <<'PY'
+  ABS_COMPONENTS_FILE="$COMPONENTS_FILE" python3 - "$RESULTS" "$T" "$DIRECT" "$KV" <<'PY'
 import csv, math, os, re, sys
 path = sys.argv[1]
 threads = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
@@ -880,7 +888,24 @@ except Exception:
     print('n/a')
     raise SystemExit
 
+# Structured metrics captured at measurement time (metrics.tsv). These are
+# authoritative for scoring; the display-text rows are only a fallback for
+# callers that feed results.tsv directly.
+kv = {}
+try:
+    with open(sys.argv[4], newline='', encoding='utf-8', errors='replace') as f:
+        for row in csv.reader(f, delimiter='\t'):
+            if len(row) >= 2 and row[0] != 'Metric':
+                try:
+                    kv.setdefault(row[0], []).append(float(row[1]))
+                except ValueError:
+                    pass
+except Exception:
+    pass
+
 def first_num(text):
+    if isinstance(text, (int, float)):
+        return float(text)
     text = text or ''
     low = text.lower()
     if any(word in low for word in ('failed', 'skipped', 'invalid', 'not enough', 'not installed')):
@@ -889,6 +914,9 @@ def first_num(text):
     return float(m.group(0)) if m else None
 
 def metric(prefix):
+    for k, vals in kv.items():
+        if k.startswith(prefix):
+            return vals[0]
     for k, v in rows.items():
         if k.startswith(prefix):
             return v
@@ -957,7 +985,7 @@ network_score() {
     printf 'N/A - skipped (network excluded; local score is standalone)'
     return 0
   fi
-  NETWORK_PROFILE_IN="$NETWORK_PROFILE" IPERF_SERVER_IN="$IPERF_SERVER" python3 - "$RESULTS" <<'PY'
+  NETWORK_PROFILE_IN="$NETWORK_PROFILE" IPERF_SERVER_IN="$IPERF_SERVER" python3 - "$RESULTS" "$KV" <<'PY'
 import csv, math, os, re, statistics, sys
 rows = {}
 try:
@@ -969,7 +997,21 @@ except Exception:
     print('n/a')
     raise SystemExit
 
+kv = {}
+try:
+    with open(sys.argv[2], newline='', encoding='utf-8', errors='replace') as f:
+        for row in csv.reader(f, delimiter='\t'):
+            if len(row) >= 2 and row[0] != 'Metric':
+                try:
+                    kv.setdefault(row[0], []).append(float(row[1]))
+                except ValueError:
+                    pass
+except Exception:
+    pass
+
 def parse_num(v):
+    if isinstance(v, (int, float)):
+        return float(v)
     low = (v or '').lower()
     if any(w in low for w in ('failed', 'skipped', 'not installed', 'missing')):
         return None
@@ -977,6 +1019,9 @@ def parse_num(v):
     return float(m.group(0)) if m else None
 
 def first_num(prefix):
+    for k, vals in kv.items():
+        if k.startswith(prefix):
+            return vals[0]
     for k, v in rows.items():
         if k.startswith(prefix):
             return parse_num(v)
@@ -984,6 +1029,11 @@ def first_num(prefix):
 
 def nums(prefix):
     out = []
+    for k, vals in kv.items():
+        if k.startswith(prefix):
+            out.extend(vals)
+    if out:
+        return out
     for k, v in rows.items():
         if k.startswith(prefix):
             n = parse_num(v)
@@ -1063,7 +1113,7 @@ PY
 }
 
 abs_verdict() {
-  python3 - "$SCORE_TEXT" "$RESULTS" "$VM_TYPE" "$T" <<'PY'
+  python3 - "$SCORE_TEXT" "$RESULTS" "$VM_TYPE" "$T" "$KV" <<'PY'
 import csv, math, re, sys
 score_text, results, vm_type = sys.argv[1], sys.argv[2], (sys.argv[3] or '').lower()
 threads = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
@@ -1080,7 +1130,22 @@ try:
 except Exception:
     pass
 
+kv = {}
+try:
+    with open(sys.argv[5], newline='', encoding='utf-8', errors='replace') as f:
+        for row in csv.reader(f, delimiter='\t'):
+            if len(row) >= 2 and row[0] != 'Metric':
+                try:
+                    kv.setdefault(row[0], []).append(float(row[1]))
+                except ValueError:
+                    pass
+except Exception:
+    pass
+
 def num(prefix):
+    for k, vals in kv.items():
+        if k.startswith(prefix):
+            return vals[0]
     for k, v in rows.items():
         if k.startswith(prefix):
             mm = re.search(r'[0-9]+(?:\.[0-9]+)?', v)
@@ -1236,21 +1301,24 @@ network_sanity() {
 
   local lat down up
   if lat="$(curl -fL -sS --max-time 8 -o /dev/null -w '%{time_starttransfer}' 'https://speed.cloudflare.com/__down?bytes=0' 2>"$LOGDIR/net-ttfb.err")" && awk -v x="$lat" 'BEGIN{exit !(x+0>0)}'; then
-    add "Network Cloudflare TTFB" "$(awk -v s="$lat" 'BEGIN{printf "%.2f ms", s*1000}')"
+    ttfb_ms="$(awk -v s="$lat" 'BEGIN{printf "%.2f", s*1000}')"
+    add "Network Cloudflare TTFB" "$ttfb_ms ms" "$ttfb_ms"
   else
     add "Network Cloudflare TTFB" "FAILED; see $LOGDIR/net-ttfb.err"
   fi
 
   if cloudflare_download; then
     down="$NETWORK_VALUE"
-    add "Network Cloudflare download" "$(awk -v b="$down" 'BEGIN{printf "%.2f Mbps", b*8/1000000}')"
+    down_mbps="$(awk -v b="$down" 'BEGIN{printf "%.2f", b*8/1000000}')"
+    add "Network Cloudflare download" "$down_mbps Mbps" "$down_mbps"
   else
     add "Network Cloudflare download" "$(network_failure_result "$LOGDIR/net-down.err")"
   fi
 
   if cloudflare_upload; then
     up="$NETWORK_VALUE"
-    add "Network Cloudflare upload" "$(awk -v b="$up" 'BEGIN{printf "%.2f Mbps", b*8/1000000}')"
+    up_mbps="$(awk -v b="$up" 'BEGIN{printf "%.2f", b*8/1000000}')"
+    add "Network Cloudflare upload" "$up_mbps Mbps" "$up_mbps"
   else
     add "Network Cloudflare upload" "$(network_failure_result "$LOGDIR/net-up.err")"
   fi
@@ -1269,11 +1337,8 @@ pick_port() {
 }
 
 run_iperf_cmd() {
-  if have timeout; then
-    timeout 18 "$@"
-  else
-    "$@"
-  fi
+  # Portable watchdog (GNU timeout is absent on stock macOS).
+  abs_timeout 18 "$@"
 }
 
 parse_iperf_bps() {
@@ -1303,7 +1368,8 @@ iperf_pair() {
     if run_iperf_cmd iperf3 -J -t "$IPERF_TIME" -P "$IPERF_PARALLEL" -c "$host" -p "$port" >"$json" 2>"$json.err"; then
       bps="$(parse_iperf_bps "$json" send)"
       if awk -v b="$bps" 'BEGIN{exit !(b+0>0)}'; then
-        add "Network iperf3 send $label" "$(awk -v b="$bps" 'BEGIN{printf "%.2f Mbps", b/1000000}')"
+        send_mbps="$(awk -v b="$bps" 'BEGIN{printf "%.2f", b/1000000}')"
+        add "Network iperf3 send $label" "$send_mbps Mbps" "$send_mbps"
         ok=1
         break
       fi
@@ -1318,7 +1384,8 @@ iperf_pair() {
     if run_iperf_cmd iperf3 -J -R -t "$IPERF_TIME" -P "$IPERF_PARALLEL" -c "$host" -p "$port" >"$json" 2>"$json.err"; then
       bps="$(parse_iperf_bps "$json" recv)"
       if awk -v b="$bps" 'BEGIN{exit !(b+0>0)}'; then
-        add "Network iperf3 recv $label" "$(awk -v b="$bps" 'BEGIN{printf "%.2f Mbps", b/1000000}')"
+        recv_mbps="$(awk -v b="$bps" 'BEGIN{printf "%.2f", b/1000000}')"
+        add "Network iperf3 recv $label" "$recv_mbps Mbps" "$recv_mbps"
         ok=1
         break
       fi
@@ -1376,17 +1443,17 @@ dd_fallback() {
     dd if=/dev/null of=/dev/null bs=1 count=0 conv=fsync >/dev/null 2>&1 || dd_sync_arg=""
   fi
   # shellcheck disable=SC2086
-  if dd if=/dev/zero of="$dd_file" bs=64M count=4 oflag=direct $dd_sync_arg >"$write_log" 2>&1; then
+  if abs_timeout "$ABS_CMD_TIMEOUT" dd if=/dev/zero of="$dd_file" bs=64M count=4 oflag=direct $dd_sync_arg >"$write_log" 2>&1; then
     add "Disk fallback dd write" "$(awk 'END{print}' "$write_log") (not scored)"
-  elif dd if=/dev/zero of="$dd_file" bs=64M count=4 $dd_sync_arg >"$write_log" 2>&1; then
+  elif abs_timeout "$ABS_CMD_TIMEOUT" dd if=/dev/zero of="$dd_file" bs=64M count=4 $dd_sync_arg >"$write_log" 2>&1; then
     add "Disk fallback dd write" "$(awk 'END{print}' "$write_log") (buffered; not scored)"
   else
     add "Disk fallback dd write" "FAILED; see $write_log"
   fi
   if [ -f "$dd_file" ]; then
-    if dd if="$dd_file" of=/dev/null bs=64M iflag=direct >"$read_log" 2>&1; then
+    if abs_timeout "$ABS_CMD_TIMEOUT" dd if="$dd_file" of=/dev/null bs=64M iflag=direct >"$read_log" 2>&1; then
       add "Disk fallback dd read" "$(awk 'END{print}' "$read_log") (not scored)"
-    elif dd if="$dd_file" of=/dev/null bs=64M >"$read_log" 2>&1; then
+    elif abs_timeout "$ABS_CMD_TIMEOUT" dd if="$dd_file" of=/dev/null bs=64M >"$read_log" 2>&1; then
       add "Disk fallback dd read" "$(awk 'END{print}' "$read_log") (buffered; not scored)"
     else
       add "Disk fallback dd read" "FAILED; see $read_log"
@@ -1697,7 +1764,7 @@ if have sysbench; then
   if run_log cpu-1t sysbench cpu --threads=1 --time="$D" --events=0 --percentile=95 --cpu-max-prime="$CPU_PRIME" run; then
     cpu_1t_eps="$(eps "$LAST_LOG")"
     if is_num "$cpu_1t_eps"; then
-      add "CPU single thread" "$cpu_1t_eps events/s, p95 $(p95 "$LAST_LOG") ms"
+      add "CPU single thread" "$cpu_1t_eps events/s, p95 $(p95 "$LAST_LOG") ms" "$cpu_1t_eps"
     else
       add "CPU single thread" "FAILED; no events-per-second field; see $LAST_LOG"
     fi
@@ -1708,7 +1775,7 @@ if have sysbench; then
   if run_log cpu-all sysbench cpu --threads="$T" --time="$D" --events=0 --percentile=95 --cpu-max-prime="$CPU_PRIME" run; then
     cpu_all_eps="$(eps "$LAST_LOG")"
     if is_num "$cpu_all_eps"; then
-      add "CPU all threads ($T)" "$cpu_all_eps events/s, p95 $(p95 "$LAST_LOG") ms"
+      add "CPU all threads ($T)" "$cpu_all_eps events/s, p95 $(p95 "$LAST_LOG") ms" "$cpu_all_eps"
     else
       add "CPU all threads ($T)" "FAILED; no events-per-second field; see $LAST_LOG"
     fi
@@ -1719,7 +1786,7 @@ if have sysbench; then
   if run_log mem-read sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-scope=local --memory-block-size="$MEM_BLOCK" --memory-total-size=100T --memory-oper=read --memory-access-mode=seq run; then
     mem_read="$(memspeed "$LAST_LOG")"
     if [ -n "$mem_read" ]; then
-      add "Memory read ($T threads)" "$mem_read"
+      add "Memory read ($T threads)" "$mem_read" "${mem_read%% *}"
     else
       add "Memory read" "FAILED; no throughput field; see $LAST_LOG"
     fi
@@ -1730,7 +1797,7 @@ if have sysbench; then
   if run_log mem-write sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-scope=local --memory-block-size="$MEM_BLOCK" --memory-total-size=100T --memory-oper=write --memory-access-mode=seq run; then
     mem_write="$(memspeed "$LAST_LOG")"
     if [ -n "$mem_write" ]; then
-      add "Memory write ($T threads)" "$mem_write"
+      add "Memory write ($T threads)" "$mem_write" "${mem_write%% *}"
     else
       add "Memory write" "FAILED; no throughput field; see $LAST_LOG"
     fi
@@ -1771,13 +1838,15 @@ if [ -n "$FIO_BIN" ] && have python3; then
       fi
 
       if fio_run fio-rand-read-q1 randread 4k 1 1 --randrepeat=0; then
-        add "Disk random read 4K QD1" "$(fio_metric read_iops) IOPS, $(fio_metric read_mib) MiB/s, p95 $(fio_metric read_p95_ms) ms"
+        qd1_read_iops="$(fio_metric read_iops)"
+        add "Disk random read 4K QD1" "$qd1_read_iops IOPS, $(fio_metric read_mib) MiB/s, p95 $(fio_metric read_p95_ms) ms" "$qd1_read_iops"
       else
         add "Disk random read 4K QD1" "FAILED; see $LOGDIR/fio-rand-read-q1.err"
       fi
 
       if fio_run fio-rand-write-q1 randwrite 4k 1 1 --randrepeat=0; then
-        add "Disk random write 4K QD1" "$(fio_metric write_iops) IOPS, $(fio_metric write_mib) MiB/s, p95 $(fio_metric write_p95_ms) ms"
+        qd1_write_iops="$(fio_metric write_iops)"
+        add "Disk random write 4K QD1" "$qd1_write_iops IOPS, $(fio_metric write_mib) MiB/s, p95 $(fio_metric read_p95_ms) ms" "$qd1_write_iops"
       else
         add "Disk random write 4K QD1" "FAILED; see $LOGDIR/fio-rand-write-q1.err"
       fi
@@ -1801,7 +1870,8 @@ if [ -n "$FIO_BIN" ] && have python3; then
       fi
 
       if fio_run fio-fsync-write randwrite 4k 1 1 --fsync=1 --randrepeat=0; then
-        add "Disk durable write 4K fsync" "$(fio_metric write_iops) writes/s, write p95 $(fio_metric write_p95_ms) ms, sync p95 $(fio_metric sync_p95_ms) ms"
+        fsync_iops="$(fio_metric write_iops)"
+        add "Disk durable write 4K fsync" "$fsync_iops writes/s, write p95 $(fio_metric write_p95_ms) ms, sync p95 $(fio_metric sync_p95_ms) ms" "$fsync_iops"
       else
         add "Disk durable write 4K fsync" "FAILED; see $LOGDIR/fio-fsync-write.err"
       fi

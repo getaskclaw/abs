@@ -269,7 +269,7 @@ class AbsTests(unittest.TestCase):
 
     def test_verdict_reasons_match_verdict_code(self) -> None:
         match = re.search(
-            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" <<'PY'\n(.*?)\nPY\n\}",
+            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" \"\$KV\" <<'PY'\n(.*?)\nPY\n\}",
             self.source,
             re.S,
         )
@@ -335,7 +335,7 @@ class AbsTests(unittest.TestCase):
 
     def test_component_floor_threshold_boundaries(self) -> None:
         match = re.search(
-            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" <<'PY'\n(.*?)\nPY\n\}",
+            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" \"\$KV\" <<'PY'\n(.*?)\nPY\n\}",
             self.source,
             re.S,
         )
@@ -643,6 +643,56 @@ class AbsTests(unittest.TestCase):
         self.assertIn("--memory-scope=local", self.source)
         self.assertNotIn("--memory-block-size=1M", self.source)
         self.assertIn('--memory-block-size="$MEM_BLOCK"', self.source)
+
+    def test_scoring_prefers_metrics_tsv_over_display_text(self) -> None:
+        fn = extract_between(self.source, "abs_local_score() {", "\n}\n\nnetwork_score()") + "\n}\n"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            results = root / "results.tsv"
+            kv = root / "metrics.tsv"
+            comp = root / "components.tsv"
+            # Display text claims inflated numbers; metrics.tsv holds the real
+            # measured values. The scorer must use metrics.tsv.
+            results.write_text(
+                "Metric\tResult\n"
+                "CPU single thread\t99999 events/s, p95 0.01 ms\n"
+                "CPU all threads (8)\t99999 events/s, p95 0.01 ms\n"
+                "Memory read (8 threads)\t99999 MiB/sec\n"
+                "Memory write (8 threads)\t99999 MiB/sec\n"
+                "Disk random read 4K QD1\t99999 IOPS\n"
+                "Disk random write 4K QD1\t99999 IOPS\n"
+                "Disk durable write 4K fsync\t99999 writes/s\n",
+                encoding="utf-8",
+            )
+            kv.write_text(
+                "Metric\tValue\n"
+                "CPU single thread\t400\n"
+                "CPU all threads (8)\t3200\n"
+                "Memory read (8 threads)\t30000\n"
+                "Memory write (8 threads)\t20000\n"
+                "Disk random read 4K QD1\t10000\n"
+                "Disk random write 4K QD1\t5000\n"
+                "Disk durable write 4K fsync\t2000\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "RESULTS": str(results),
+                    "KV": str(kv),
+                    "COMPONENTS_FILE": str(comp),
+                    "T": "8",
+                    "DIRECT": "1",
+                }
+            )
+            proc = subprocess.run(
+                ["bash", "-c", fn + "\nabs_local_score"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        self.assertTrue(proc.stdout.startswith("FULL 1000"), proc.stdout)
 
     def test_malformed_fio_json_is_failed_not_zero(self) -> None:
         metric = extract_between(self.source, "fio_metric() {", "\n}\n\nabs_local_score()") + "\n}\n"
