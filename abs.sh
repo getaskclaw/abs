@@ -5,7 +5,7 @@ export LC_ALL=C
 VERSION="0.5.1"
 TIME_START_EPOCH="$(date +%s)"
 TIME_START_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-VCPU="$(nproc 2>/dev/null || echo 1)"
+VCPU="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
 
 PROFILE="${PROFILE:-default}"
 D="${D:-}"
@@ -14,6 +14,7 @@ SIZE="${SIZE:-auto}"
 DIR="${DIR:-$PWD/.abs}"
 CPU_PRIME="${CPU_PRIME:-20000}"
 DIRECT="${DIRECT:-1}"
+FIO_ENGINE_ENV="${FIO_ENGINE-}"
 FIO_ENGINE="${FIO_ENGINE:-libaio}"
 JOBS_ENV="${JOBS-}"
 DEPTH="${DEPTH:-32}"
@@ -284,6 +285,7 @@ sudo_cmd() {
     # attach it so normal interactive sudo authentication still works. In
     # cron/CI or other headless runs, stay non-interactive and fail quickly.
     if [ -r /dev/tty ]; then
+      # shellcheck disable=SC2024
       sudo "$@" </dev/tty
     else
       sudo -n "$@"
@@ -348,6 +350,21 @@ find_fio_bin() {
 have_fio() {
   FIO_BIN="$(find_fio_bin 2>/dev/null || true)"
   [ -n "$FIO_BIN" ]
+}
+
+select_fio_engine() {
+  # An explicit FIO_ENGINE wins; otherwise pick the first engine this fio
+  # binary can actually load (macOS/Homebrew builds ship no libaio).
+  [ -n "$FIO_ENGINE_ENV" ] && return 0
+  [ -n "$FIO_BIN" ] || return 0
+  local engines e
+  engines="$("$FIO_BIN" --enghelp 2>/dev/null | awk 'NR>1 {gsub(/^[ \t]+/, ""); print $1}')"
+  for e in "$FIO_ENGINE" posixaio sync; do
+    if printf '%s\n' "$engines" | grep -qx "$e"; then
+      FIO_ENGINE="$e"
+      return 0
+    fi
+  done
 }
 
 missing_tools() {
@@ -444,6 +461,12 @@ install_tools() {
   elif have apk; then
     run_package_command "$LOGDIR/install-apk.log" "$LOGDIR/install-apk.err" \
       apk add --no-cache sysbench fio python3 procps $curl_pkg $iperf_pkg || true
+  elif have brew; then
+    # Homebrew refuses to run as root, so install without sudo.
+    # shellcheck disable=SC2086
+    brew install sysbench fio python3 $curl_pkg $iperf_pkg \
+      >"$LOGDIR/install-brew.log" 2>"$LOGDIR/install-brew.err" || \
+      INSTALL_ERROR_LOG="$LOGDIR/install-brew.err"
   fi
 
   have_fio || true
@@ -1300,9 +1323,16 @@ dd_fallback() {
   local write_log="$LOGDIR/dd-write.log"
   local read_log="$LOGDIR/dd-read.log"
   rm -f "$dd_file" 2>/dev/null || true
-  if dd if=/dev/zero of="$dd_file" bs=64M count=4 oflag=direct conv=fdatasync >"$write_log" 2>&1; then
+  # GNU dd supports conv=fdatasync; macOS/BSD dd only supports conv=fsync.
+  local dd_sync_arg="conv=fdatasync"
+  if ! dd if=/dev/null of=/dev/null bs=1 count=0 conv=fdatasync >/dev/null 2>&1; then
+    dd_sync_arg="conv=fsync"
+    dd if=/dev/null of=/dev/null bs=1 count=0 conv=fsync >/dev/null 2>&1 || dd_sync_arg=""
+  fi
+  # shellcheck disable=SC2086
+  if dd if=/dev/zero of="$dd_file" bs=64M count=4 oflag=direct $dd_sync_arg >"$write_log" 2>&1; then
     add "Disk fallback dd write" "$(awk 'END{print}' "$write_log") (not scored)"
-  elif dd if=/dev/zero of="$dd_file" bs=64M count=4 conv=fdatasync >"$write_log" 2>&1; then
+  elif dd if=/dev/zero of="$dd_file" bs=64M count=4 $dd_sync_arg >"$write_log" 2>&1; then
     add "Disk fallback dd write" "$(awk 'END{print}' "$write_log") (buffered; not scored)"
   else
     add "Disk fallback dd write" "FAILED; see $write_log"
@@ -1456,19 +1486,24 @@ fi
 
 install_tools
 have_fio || true
+select_fio_engine
 
 HOST="$(hostname 2>/dev/null || true)"
 KERNEL="$(uname -srmo 2>/dev/null || uname -a 2>/dev/null || echo unknown)"
-DISTRO="$(awk -F= '/^PRETTY_NAME=/ {gsub(/^"|"$/, "", $2); print $2; exit}' /etc/os-release 2>/dev/null || echo unknown)"
+DISTRO="$(awk -F= '/^PRETTY_NAME=/ {gsub(/^"|"$/, "", $2); print $2; exit}' /etc/os-release 2>/dev/null || sw_vers 2>/dev/null | awk 'NR==1{n=$2} NR==2{v=$2} END{if(n!=""){printf "%s %s", n, v; exit 0} exit 1}' || echo unknown)"
 UPTIME_TEXT="$(uptime -p 2>/dev/null | sed 's/^up //' || awk '{printf "%s seconds", int($1)}' /proc/uptime 2>/dev/null || echo unknown)"
-CPU_MODEL="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null || lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || echo unknown)"
+CPU_MODEL="$(awk -F: '/model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null || lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/, "", $2); print $2; exit}' || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
 CPU_CORES="$(awk -F: '/model name/ {core++} END {print core+0}' /proc/cpuinfo 2>/dev/null || echo "$VCPU")"
 [ "${CPU_CORES:-0}" = "0" ] && CPU_CORES="$VCPU"
-CPU_FREQ="$(awk -F: '/cpu MHz/ {freq=$2} END {gsub(/^[ \t]+/, "", freq); if (freq) print freq " MHz"}' /proc/cpuinfo 2>/dev/null || echo unknown)"
+CPU_FREQ="$(awk -F: '/cpu MHz/ {freq=$2} END {gsub(/^[ \t]+/, "", freq); if (freq) print freq " MHz"}' /proc/cpuinfo 2>/dev/null || sysctl -n hw.cpufrequency 2>/dev/null | awk '{if($1>0){printf "%.0f MHz", $1/1000000; ok=1}} END{if(!ok) exit 1}' || echo unknown)"
 AES_NI="$(grep -qiE '(^| )aes( |$)' /proc/cpuinfo 2>/dev/null && echo enabled || echo disabled)"
 CPU_VIRT="$(grep -qiE '(^| )(vmx|svm)( |$)' /proc/cpuinfo 2>/dev/null && echo enabled || echo disabled)"
 RAM_KIB="$(free 2>/dev/null | awk '/^Mem:/ {print $2+0}' || echo 0)"
+[ "${RAM_KIB:-0}" = "0" ] && RAM_KIB="$(sysctl -n hw.memsize 2>/dev/null | awk '{if($1>0) print int($1/1024); else exit 1}' || echo 0)"
 SWAP_KIB="$(free 2>/dev/null | awk '/^Swap:/ {print $2+0}' || echo 0)"
+if [ "${SWAP_KIB:-0}" = "0" ]; then
+  SWAP_KIB="$(sysctl -n vm.swapusage 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="total"){v=$(i+2); gsub(/[^0-9.]/,"",v); if(v+0>0){printf "%d", v*1024; ok=1}}} END{if(!ok) exit 1}' || echo 0)"
+fi
 RAM_TEXT="$(human_kib "$RAM_KIB")"
 SWAP_TEXT="$(human_kib "$SWAP_KIB")"
 DISK_FREE_KB="$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2 {print $4+0}' || echo 0)"
