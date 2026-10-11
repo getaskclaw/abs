@@ -13,6 +13,9 @@ T="${T:-$VCPU}"
 SIZE="${SIZE:-auto}"
 DIR="${DIR:-$PWD/.abs}"
 CPU_PRIME="${CPU_PRIME:-20000}"
+MEM_BLOCK="${MEM_BLOCK:-auto}"
+STRICT="${STRICT:-0}"
+ABS_CMD_TIMEOUT="${ABS_CMD_TIMEOUT:-900}"
 DIRECT="${DIRECT:-1}"
 FIO_ENGINE_ENV="${FIO_ENGINE-}"
 FIO_ENGINE="${FIO_ENGINE:-libaio}"
@@ -81,6 +84,7 @@ ABS v$VERSION — AskClaw VPS 跑分脚本
   -z, --size SIZE      fio 测试文件大小，如 512M、2G、8G
   -t, --threads N      CPU/内存测试线程数
   -n, --no-install     不安装缺失工具
+  --strict             测试不完整时以非零状态退出
   --lang zh|en         输出语言，默认 zh
   --net-info           查询 IPv4/IPv6 和外部 IP/ASN
   --no-net-info        不查询外部 IP/ASN（默认）
@@ -118,6 +122,7 @@ Options:
   -z, --size SIZE      fio test file size, e.g. 512M, 2G, 8G; default auto
   -t, --threads N      CPU/memory threads; default detected vCPU ($T)
   -n, --no-install     do not install missing packages
+  --strict             exit non-zero when the score is incomplete
   --lang zh|en         output language; default zh
   --net-info           check IPv4/IPv6 and external IP/ASN
   --no-net-info        skip external IP/ASN lookup (default)
@@ -160,6 +165,7 @@ while [ "$#" -gt 0 ]; do
       shift; [ "$#" -gt 0 ] || die "缺少参数值：-t/--threads" "Missing value for -t/--threads"
       T="$1" ;;
     -n|--no-install) INSTALL=0 ;;
+    --strict) STRICT=1 ;;
     --lang)
       shift; [ "$#" -gt 0 ] || die "缺少参数值：--lang" "Missing value for --lang"
       ABS_LANG="$1" ;;
@@ -263,6 +269,12 @@ else
   JOBS=$(( T < 4 ? T : 4 ))
 fi
 if ! is_pos_int "$JOBS"; then die "JOBS 无效：$JOBS" "Invalid JOBS: $JOBS"; fi
+if [ "$MEM_BLOCK" != "auto" ] && [[ ! "$MEM_BLOCK" =~ ^[0-9]+[KkMmGg]?$ ]]; then
+  die "MEM_BLOCK 无效：$MEM_BLOCK" "Invalid MEM_BLOCK: $MEM_BLOCK"
+fi
+if [ "$ABS_CMD_TIMEOUT" != "0" ] && ! is_pos_int "$ABS_CMD_TIMEOUT"; then
+  die "ABS_CMD_TIMEOUT 无效：$ABS_CMD_TIMEOUT" "Invalid ABS_CMD_TIMEOUT: $ABS_CMD_TIMEOUT"
+fi
 
 mkdir -p -- "$DIR"
 if [ -n "$LOGDIR_OVERRIDE" ]; then
@@ -668,11 +680,29 @@ eps() { field 'events per second' "$1"; }
 p95() { field '95th percentile' "$1"; }
 memspeed() { awk -F'[()]' '/MiB transferred/ {print $2; exit}' "$1"; }
 
+abs_timeout() {
+  # Portable timeout (no GNU coreutils dependency, e.g. stock macOS).
+  local secs="$1"; shift
+  if [ "$secs" = "0" ]; then
+    "$@"
+    return $?
+  fi
+  "$@" &
+  local pid=$!
+  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) &
+  local watcher=$!
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+  return "$rc"
+}
+
 run_log() {
   local name="$1"
   shift
   LAST_LOG="$LOGDIR/$name.log"
-  if "$@" >"$LAST_LOG" 2>&1; then
+  if abs_timeout "$ABS_CMD_TIMEOUT" "$@" >"$LAST_LOG" 2>&1; then
     return 0
   fi
   return 1
@@ -755,9 +785,12 @@ try:
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         data = json.load(f)
 except Exception:
-    print('0.00')
-    raise SystemExit
+    print('FAILED')
+    raise SystemExit(1)
 jobs = data.get('jobs') or []
+if not jobs:
+    print('FAILED')
+    raise SystemExit(1)
 
 def nums(path):
     out = []
@@ -803,12 +836,23 @@ elif metric == 'read_iops':
     val = sum_path(['read', 'iops'])
 elif metric == 'write_iops':
     val = sum_path(['write', 'iops'])
+# NOTE: empty sums legitimately mean 'measured zero' (e.g. a pure-read job's
+# write side), so keep 0.00 here; only unreadable/jobless JSON is FAILED.
 elif metric == 'read_p95_ms':
     val = max_p95('read')
+    if val == 0.0:
+        print('FAILED')
+        raise SystemExit(1)
 elif metric == 'write_p95_ms':
     val = max_p95('write')
+    if val == 0.0:
+        print('FAILED')
+        raise SystemExit(1)
 elif metric == 'mixed_p95_ms':
     val = max(max_p95('read'), max_p95('write'))
+    if val == 0.0:
+        print('FAILED')
+        raise SystemExit(1)
 elif metric == 'sync_p95_ms':
     val = sync_p95()
     if val is None:
@@ -1365,6 +1409,9 @@ json_report() {
   ABS_NET_INFO="$NET_INFO" ABS_NETWORK="$NETWORK" ABS_NETWORK_PROFILE="$NETWORK_PROFILE" \
   ABS_MISSING_TOOLS="$MISSING_AFTER_INSTALL" ABS_DIRECT="$DIRECT" ABS_FIO_ENGINE="$FIO_ENGINE" \
   ABS_JOBS="$JOBS" ABS_DEPTH="$DEPTH" ABS_IPERF_SERVER="$IPERF_SERVER" ABS_IPERF_TIME="$IPERF_TIME" ABS_IPERF_PARALLEL="$IPERF_PARALLEL" \
+  ABS_CPU_PRIME="$CPU_PRIME" ABS_MEM_BLOCK="$MEM_BLOCK" ABS_STRICT="$STRICT" \
+  ABS_SYSBENCH_VER="$SYSBENCH_VER" ABS_FIO_VER="$FIO_VER" ABS_PYTHON_VER="$PYTHON_VER" \
+  ABS_SCRIPT_SHA256="$SCRIPT_SHA256" ABS_SCORE_MODEL="abs-local-v1" \
   ABS_SCORE="$SCORE_TEXT" ABS_LOCAL_SCORE="$LOCAL_SCORE_TEXT" ABS_NETWORK_SCORE="$NETWORK_SCORE_TEXT" ABS_VERDICT="$VERDICT_TEXT" \
   python3 - "$RESULTS" <<'PY'
 import csv, json, os, re, shutil, sys
@@ -1426,6 +1473,14 @@ out = {
         'missing_tools': env('ABS_MISSING_TOOLS'), 'direct': env('ABS_DIRECT'), 'fio_engine': env('ABS_FIO_ENGINE'),
         'pressure_jobs': env_int('ABS_JOBS'), 'pressure_depth': env_int('ABS_DEPTH'),
         'iperf_server': env('ABS_IPERF_SERVER'), 'iperf_time': env_int('ABS_IPERF_TIME'), 'iperf_parallel': env_int('ABS_IPERF_PARALLEL'),
+        'cpu_prime': env_int('ABS_CPU_PRIME'), 'mem_block': env('ABS_MEM_BLOCK'), 'strict': env('ABS_STRICT') == '1',
+    },
+    'provenance': {
+        'score_model': env('ABS_SCORE_MODEL'),
+        'script_sha256': env('ABS_SCRIPT_SHA256'),
+        'tool_versions': {
+            'sysbench': env('ABS_SYSBENCH_VER'), 'fio': env('ABS_FIO_VER'), 'python3': env('ABS_PYTHON_VER'),
+        },
     },
     'score': {
         'text': score_text,
@@ -1508,6 +1563,16 @@ if [ "${SWAP_KIB:-0}" = "0" ]; then
 fi
 RAM_TEXT="$(human_kib "$RAM_KIB")"
 SWAP_TEXT="$(human_kib "$SWAP_KIB")"
+if [ "$MEM_BLOCK" = "auto" ]; then
+  # sysbench memory with --memory-scope=local gives each thread its own
+  # working set sized to MEM_BLOCK, so the test leaves last-level cache
+  # instead of cycling one shared 1 MiB buffer. Adaptive default:
+  # min(256 MiB, RAM/4/threads), floor 32 MiB.
+  mem_block_mib=$(( ${RAM_KIB:-0} / 1024 / T / 4 ))
+  [ "$mem_block_mib" -gt 256 ] && mem_block_mib=256
+  [ "$mem_block_mib" -lt 32 ] && mem_block_mib=32
+  MEM_BLOCK="${mem_block_mib}M"
+fi
 DISK_FREE_KB="$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2 {print $4+0}' || echo 0)"
 DISK_TOTAL_KB="$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2 {print $2+0}' || echo 0)"
 DISK_TEXT="$(human_kib "$DISK_FREE_KB") free / $(human_kib "$DISK_TOTAL_KB") total"
@@ -1651,7 +1716,7 @@ if have sysbench; then
     add "CPU all threads ($T)" "FAILED; see $LAST_LOG"
   fi
 
-  if run_log mem-read sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-block-size=1M --memory-total-size=100T --memory-oper=read --memory-access-mode=seq run; then
+  if run_log mem-read sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-scope=local --memory-block-size="$MEM_BLOCK" --memory-total-size=100T --memory-oper=read --memory-access-mode=seq run; then
     mem_read="$(memspeed "$LAST_LOG")"
     if [ -n "$mem_read" ]; then
       add "Memory read ($T threads)" "$mem_read"
@@ -1662,7 +1727,7 @@ if have sysbench; then
     add "Memory read" "FAILED; see $LAST_LOG"
   fi
 
-  if run_log mem-write sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-block-size=1M --memory-total-size=100T --memory-oper=write --memory-access-mode=seq run; then
+  if run_log mem-write sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-scope=local --memory-block-size="$MEM_BLOCK" --memory-total-size=100T --memory-oper=write --memory-access-mode=seq run; then
     mem_write="$(memspeed "$LAST_LOG")"
     if [ -n "$mem_write" ]; then
       add "Memory write ($T threads)" "$mem_write"
@@ -1765,6 +1830,9 @@ if have python3; then
   add "Network component" "$NETWORK_SCORE_TEXT"
   VERDICT_TEXT="$(abs_verdict)"
   add "ABS VERDICT" "$VERDICT_TEXT"
+  if [ "$STRICT" = "1" ] && [ "${VERDICT_TEXT#INCOMPLETE}" != "$VERDICT_TEXT" ]; then
+    FINAL_STATUS=1
+  fi
 else
   SCORE_TEXT="n/a (python3 missing)"
   LOCAL_SCORE_TEXT="n/a (python3 missing)"
@@ -1780,6 +1848,11 @@ add_note "Privacy note" "No result upload. Default network sanity uses Cloudflar
 
 ELAPSED_SECONDS=$(( $(date +%s) - TIME_START_EPOCH ))
 if have python3; then
+  SYSBENCH_VER="$(sysbench --version 2>/dev/null | awk 'NR==1{print $2}')"
+  FIO_VER="$([ -n "$FIO_BIN" ] && "$FIO_BIN" --version 2>/dev/null | sed 's/^fio-//' || true)"
+  PYTHON_VER="$(python3 --version 2>/dev/null | awk '{print $2}')"
+  SCRIPT_SHA256="$([ -f "$0" ] && { sha256sum "$0" 2>/dev/null || shasum -a 256 "$0" 2>/dev/null; } | awk 'NR==1{print $1}')"
+  [ -z "${SCRIPT_SHA256:-}" ] && SCRIPT_SHA256="n/a"
   if JSON_WRITTEN="$(json_report)"; then
     add_note "JSON result" "$JSON_WRITTEN"
     [ -n "$JSON_FILE" ] && add_note "JSON copy" "$JSON_FILE"

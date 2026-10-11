@@ -639,6 +639,62 @@ class AbsTests(unittest.TestCase):
             all_threads = next(v for k, v in metrics.items() if k.startswith("CPU all threads"))
             self.assertTrue(all_threads.startswith("FAILED"), all_threads)
 
+    def test_memory_tests_use_per_thread_scope(self) -> None:
+        self.assertIn("--memory-scope=local", self.source)
+        self.assertNotIn("--memory-block-size=1M", self.source)
+        self.assertIn('--memory-block-size="$MEM_BLOCK"', self.source)
+
+    def test_malformed_fio_json_is_failed_not_zero(self) -> None:
+        metric = extract_between(self.source, "fio_metric() {", "\n}\n\nabs_local_score()") + "\n}\n"
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as bad:
+            bad.write("{not json")
+            bad.flush()
+            proc = subprocess.run(
+                ["bash", "-c", metric + '\nfio_metric read_iops "$1"', "bash", bad.name],
+                text=True,
+                capture_output=True,
+            )
+        self.assertEqual(proc.stdout.strip(), "FAILED")
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_strict_mode_exits_nonzero_on_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bin_dir = root / "bin"
+            data_dir = root / "data"
+            log_dir = root / "logs"
+            bin_dir.mkdir()
+            data_dir.mkdir()
+            write_fake_tools(bin_dir)
+            sysbench = bin_dir / "sysbench"
+            sysbench.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"${1:-}\" = \"--version\" ]; then echo 'sysbench 1.0.20'; exit 0; fi\n"
+                "exit 1\n"
+            )
+            sysbench.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "DIR": str(data_dir),
+                    "LOGDIR": str(log_dir),
+                    "INSTALL": "0",
+                    "ABS_LANG": "en",
+                }
+            )
+            lax = subprocess.run(
+                [str(SCRIPT), "--quick", "-n", "--no-network"],
+                env=env, text=True, capture_output=True, timeout=60,
+            )
+            self.assertEqual(lax.returncode, 0)
+            strict = subprocess.run(
+                [str(SCRIPT), "--quick", "-n", "--no-network", "--strict"],
+                env=env, text=True, capture_output=True, timeout=60,
+            )
+            self.assertEqual(strict.returncode, 1)
+            self.assertIn("INCOMPLETE", strict.stdout)
+
     def test_json_copy_failure_returns_nonzero_without_false_success(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
