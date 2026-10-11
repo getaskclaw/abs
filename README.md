@@ -4,7 +4,7 @@
 
 租或续一台 Linux VPS 前跑一下，看 CPU 快不快、内存够不够、磁盘能不能真写。跑完给一个分数和一句结论：**保留 / 谨慎保留 / 不建议保留 / 测试不完整**。
 
-<p align="center"><img src="assets/abs-to6427-3vcpu-keep.jpg" width="720" alt="ABS 实跑示例：主机信息 → 各分项指标 → 最终得分和结论"></p>
+<p align="center"><img src="assets/abs-ip172-8vcpu-keep.jpg" width="720" alt="ABS 实跑示例：主机信息 → 各分项指标 → 最终得分和结论"></p>
 
 上图是一次真实跑分：先列机器配置，再逐项打印 CPU/内存/磁盘/fsync 数据，最后给出总分和「保留」结论。
 

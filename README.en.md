@@ -4,7 +4,7 @@
 
 Run it on a Linux VPS before you rent or renew — it tells you whether the CPU is fast, the memory is adequate, and the disk can actually write. When it finishes you get a score plus one verdict: **KEEP / MAYBE / AVOID / INCOMPLETE**.
 
-<p align="center"><img src="assets/abs-to6427-3vcpu-keep.jpg" width="720" alt="A real ABS run: host info → per-metric results → final score and verdict"></p>
+<p align="center"><img src="assets/abs-ip172-8vcpu-keep.jpg" width="720" alt="A real ABS run: host info → per-metric results → final score and verdict"></p>
 
 The image above is a real run: host details first, then the measured CPU/memory/disk/fsync numbers, then the final score and a `KEEP` verdict.
 
