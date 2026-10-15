@@ -1672,16 +1672,32 @@ if [ "${SWAP_KIB:-0}" = "0" ]; then
 fi
 RAM_TEXT="$(human_kib "$RAM_KIB")"
 SWAP_TEXT="$(human_kib "$SWAP_KIB")"
-if [ "$MEM_BLOCK" = "auto" ]; then
-  # sysbench memory with --memory-scope=local gives each thread its own
-  # working set sized to MEM_BLOCK, so the test leaves last-level cache
-  # instead of cycling one shared 1 MiB buffer. Adaptive default:
-  # min(256 MiB, RAM/4/threads), floor 32 MiB.
-  mem_block_mib=$(( ${RAM_KIB:-0} / 1024 / T / 4 ))
-  [ "$mem_block_mib" -gt 256 ] && mem_block_mib=256
-  [ "$mem_block_mib" -lt 32 ] && mem_block_mib=32
-  MEM_BLOCK="${mem_block_mib}M"
-fi
+resolve_mem_block() {
+  local mem_block_mib power digits
+  if [ "$MEM_BLOCK" = "auto" ]; then
+    # Each local-scope thread gets its own working set. Keep the existing
+    # 32–256 MiB bounds, then round down: sysbench requires a power of two.
+    mem_block_mib=$(( ${RAM_KIB:-0} / 1024 / T / 4 ))
+    [ "$mem_block_mib" -gt 256 ] && mem_block_mib=256
+    [ "$mem_block_mib" -lt 32 ] && mem_block_mib=32
+    power=32
+    while [ "$((power * 2))" -le "$mem_block_mib" ]; do
+      power=$((power * 2))
+    done
+    MEM_BLOCK="${power}M"
+  else
+    # Unit multipliers are powers of two, so checking the numeric part is
+    # sufficient. Bound its length before Bash arithmetic to avoid overflow.
+    if [[ ! "$MEM_BLOCK" =~ ^([1-9][0-9]{0,17})([KkMmGgTt]?)$ ]]; then
+      die "无效的 MEM_BLOCK：$MEM_BLOCK；请使用 2 的幂，如 64M。" "Invalid MEM_BLOCK: $MEM_BLOCK; use a power of two, e.g. 64M."
+    fi
+    digits="${BASH_REMATCH[1]}"
+    if [ "$((digits & (digits - 1)))" -ne 0 ]; then
+      die "无效的 MEM_BLOCK：$MEM_BLOCK；sysbench 要求大小为 2 的幂，如 64M。" "Invalid MEM_BLOCK: $MEM_BLOCK; sysbench requires a power of two, e.g. 64M."
+    fi
+  fi
+}
+resolve_mem_block
 DISK_FREE_KB="$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2 {print $4+0}' || echo 0)"
 DISK_TOTAL_KB="$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2 {print $2+0}' || echo 0)"
 DISK_TEXT="$(human_kib "$DISK_FREE_KB") free / $(human_kib "$DISK_TOTAL_KB") total"

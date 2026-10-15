@@ -15,7 +15,7 @@ jobs:
       - name: Check shell
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck
+          sudo apt-get install -y shellcheck sysbench
           shellcheck abs.sh
       - name: Run regression suite
-        run: python3 -m unittest -v tests/test_abs.py
+        run: python3 -m unittest discover -s tests -v
