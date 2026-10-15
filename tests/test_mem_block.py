@@ -21,7 +21,7 @@ class MemoryBlockTests(unittest.TestCase):
         )
 
     def test_auto_rounds_down_and_preserves_bounds(self):
-        for mib, expected in [(0, 32), (31, 32), (32, 32), (48, 32),
+        for mib, expected in [(0, None), (31, None), (32, 32), (48, 32),
                               (64, 64), (96, 64), (127, 64), (128, 128),
                               (192, 128), (246, 128), (255, 128),
                               (256, 256), (512, 256)]:
@@ -29,7 +29,7 @@ class MemoryBlockTests(unittest.TestCase):
                 with self.subTest(mib=mib, threads=threads):
                     proc = self.resolve(ram=mib * 1024 * threads * 4, threads=threads)
                     self.assertEqual(proc.returncode, 0, proc.stderr)
-                    self.assertEqual(proc.stdout, f"{expected}M")
+                    self.assertEqual(proc.stdout, "" if expected is None else f"{expected}M")
 
     def test_valid_overrides_are_preserved(self):
         for block in ("64M", "128M", "256M", "1G", "1024K", "1048576", "64m"):

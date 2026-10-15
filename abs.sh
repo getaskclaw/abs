@@ -55,6 +55,10 @@ INSTALL_ATTEMPTED="0"
 MISSING_AFTER_INSTALL=""
 INSTALL_ERROR_LOG=""
 FINAL_STATUS=0
+TARGET_FS_TYPE="unknown"
+TARGET_FS_CLASS="unknown"
+TARGET_FS_DISPLAY="unknown"
+TARGET_FS_SKIP_REASON=""
 
 is_zh() { [ "$ABS_LANG" = "zh" ]; }
 
@@ -513,6 +517,7 @@ zh_metric() {
     "CPU steal (1s sample)") printf 'CPU steal（1 秒采样）' ;;
     "sysbench CPU/memory") printf 'sysbench CPU/内存测试' ;;
     "fio disk tests") printf 'fio 磁盘测试' ;;
+    "Disk target filesystem") printf '磁盘目标文件系统' ;;
     "fio prepare") printf 'fio 测试文件准备' ;;
     "Disk sequential write") printf '磁盘顺序写入' ;;
     "Disk sequential read") printf '磁盘顺序读取' ;;
@@ -650,6 +655,11 @@ zh_result() {
     "invalid SIZE="*) printf 'SIZE 无效，已跳过：%s' "${text#invalid }"; return ;;
     "not enough free space for "*) printf '可用空间不足，已跳过：%s' "${text#not enough free space for }"; return ;;
     "ABS score is LOCAL-only:"*) printf 'ABS 总分仅计算本地 CPU、内存、磁盘和 fsync；网络仅供参考，不影响总分。'; return ;;
+    "memory-backed filesystem ("*)
+      local fs="${text#memory-backed filesystem (}"
+      printf '内存文件系统（%s），已跳过所有磁盘写入；不可比较' "${fs%%)*}"; return ;;
+    *" (memory-backed)") printf '%s（内存文件系统）' "${text% (memory-backed)}"; return ;;
+    "unknown") printf '未知（无法识别；按普通磁盘继续测试）'; return ;;
     "No result upload."*) printf '不上传结果；网络检查会访问 Cloudflare，安装依赖会访问软件源。'; return ;;
   esac
   text="${text//events\/s/事件\/秒}"
@@ -694,27 +704,54 @@ p95() { field '95th percentile' "$1"; }
 memspeed() { awk -F'[()]' '/MiB transferred/ {print $2; exit}' "$1"; }
 
 abs_timeout() {
-  # Portable timeout (no GNU coreutils dependency, e.g. stock macOS).
-  # Escalates to SIGKILL after a grace period so a stuck child (e.g. uninterruptible
-  # I/O or a process ignoring TERM) cannot hang the whole script forever.
+  # Internal worker: run_timed always launches this in a background subshell.
+  # Bash monitor mode gives its workload a separate process group.
   local secs="$1"; shift
-  if [ "$secs" = "0" ]; then
-    "$@"
-    return $?
-  fi
+  local pid="" watcher="" rc=0 timed_out=0 worker_pid
+  worker_pid="$(exec sh -c 'echo "$PPID"')"
+  # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+  timeout_cleanup() {
+    if [ -n "$watcher" ]; then
+      kill -TERM -- "-$watcher" 2>/dev/null || true
+      wait "$watcher" 2>/dev/null || true
+    fi
+    if [ -n "$pid" ] && kill -0 -- "-$pid" 2>/dev/null; then
+      kill -TERM -- "-$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL -- "-$pid" 2>/dev/null || true
+    fi
+  }
+  trap timeout_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  trap 'timed_out=1' USR1
+  set -m
   "$@" &
-  local pid=$!
-  (
-    sleep "$secs"
-    kill -TERM "$pid" 2>/dev/null || exit 0
-    sleep 3
-    kill -KILL "$pid" 2>/dev/null
-  ) &
-  local watcher=$!
-  local rc=0
+  pid=$!
+  set +m
+  if [ "$secs" != "0" ]; then
+    set -m
+    (
+      sleep "$secs"
+      kill -USR1 "$worker_pid" 2>/dev/null || true
+    ) &
+    watcher=$!
+    set +m
+  fi
   wait "$pid" 2>/dev/null || rc=$?
-  kill "$watcher" 2>/dev/null
-  wait "$watcher" 2>/dev/null
+  if [ "$timed_out" = "1" ]; then rc=124; fi
+  return "$rc"
+}
+
+run_timed() {
+  # Waiting on an asynchronous wrapper lets top-level signal traps run
+  # immediately, rather than being deferred until a foreground job finishes.
+  local rc=0
+  abs_timeout "$@" &
+  ABS_ACTIVE_TIMEOUT_PID=$!
+  wait "$ABS_ACTIVE_TIMEOUT_PID" || rc=$?
+  ABS_ACTIVE_TIMEOUT_PID=""
   return "$rc"
 }
 
@@ -722,10 +759,55 @@ run_log() {
   local name="$1"
   shift
   LAST_LOG="$LOGDIR/$name.log"
-  if abs_timeout "$ABS_CMD_TIMEOUT" "$@" >"$LAST_LOG" 2>&1; then
+  if run_timed "$ABS_CMD_TIMEOUT" "$@" >"$LAST_LOG" 2>&1; then
     return 0
   fi
   return 1
+}
+
+target_fs_type() {
+  # Print the filesystem type holding $1. Linux: df -PT, then stat -f.
+  # Other systems (macOS/BSD): match the mount table. Prints "unknown" when
+  # no method names it, so the caller never guesses a memory-backed type.
+  local path="$1" fs="" mp
+  if [ "$(uname -s 2>/dev/null || true)" = "Linux" ]; then
+    fs="$(df -PT "$path" 2>/dev/null | awk 'NR==2 {print $2}' || true)"
+    if [ -z "$fs" ]; then
+      fs="$(stat -f -c %T "$path" 2>/dev/null || true)"
+    fi
+  fi
+  if [ -z "$fs" ]; then
+    mp="$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {for (i = 6; i <= NF; i++) printf "%s%s", $i, (i < NF ? " " : "")}' || true)"
+    if [ -n "$mp" ]; then
+      fs="$(mount 2>/dev/null | awk -v mp="$mp" 'index($0, " on " mp " type ") { s = substr($0, index($0, " type ") + 6); sub(/ .*/, "", s); print s; exit } index($0, " on " mp " (") { s = substr($0, index($0, " (") + 2); sub(/[,)].*/, "", s); print s; exit }' || true)"
+    fi
+  fi
+  printf '%s' "${fs:-unknown}"
+}
+
+detect_target_fs() {
+  # Classify the filesystem holding RUN_DIR before any fio or dd write.
+  # Only tmpfs/ramfs/devtmpfs are memory-backed; unknown is never claimed.
+  local fs cls
+  fs="$(target_fs_type "$RUN_DIR")"
+  TARGET_FS_SKIP_REASON=""
+  case "$fs" in
+    tmpfs|ramfs|devtmpfs)
+      cls="memory"
+      TARGET_FS_DISPLAY="$fs (memory-backed)"
+      TARGET_FS_SKIP_REASON="memory-backed filesystem ($fs); disk writes skipped; not comparable"
+      ;;
+    unknown|UNKNOWN*)
+      cls="unknown"
+      TARGET_FS_DISPLAY="unknown"
+      ;;
+    *)
+      cls="persistent"
+      TARGET_FS_DISPLAY="$fs"
+      ;;
+  esac
+  TARGET_FS_TYPE="$fs"
+  TARGET_FS_CLASS="$cls"
 }
 
 fio_run() {
@@ -777,7 +859,7 @@ fio_run() {
 
   args+=("$@")
 
-  if abs_timeout "$ABS_CMD_TIMEOUT" "$FIO_BIN" "${args[@]}" >"$LAST_JSON" 2>"$err"; then
+  if run_timed "$ABS_CMD_TIMEOUT" "$FIO_BIN" "${args[@]}" >"$LAST_JSON" 2>"$err"; then
     return 0
   fi
   return 1
@@ -1354,7 +1436,7 @@ run_iperf_cmd() {
   # user-requested run longer than ~13s mid-test and report it as FAILED.
   local budget=$(( IPERF_TIME + 15 ))
   [ "$budget" -gt "$ABS_CMD_TIMEOUT" ] && budget="$ABS_CMD_TIMEOUT"
-  abs_timeout "$budget" "$@"
+  run_timed "$budget" "$@"
 }
 
 cpu_steal_pct() {
@@ -1462,6 +1544,10 @@ iperf_sanity() {
 }
 
 dd_fallback() {
+  if [ "$TARGET_FS_CLASS" = "memory" ]; then
+    add "Disk fallback dd" "$TARGET_FS_SKIP_REASON"
+    return 0
+  fi
   if ! have dd; then
     add "Disk fallback dd" "dd not installed; skipped"
     return 0
@@ -1485,23 +1571,41 @@ dd_fallback() {
     dd if=/dev/null of=/dev/null bs=1 count=0 conv=fsync >/dev/null 2>&1 || dd_sync_arg=""
   fi
   # shellcheck disable=SC2086
-  if abs_timeout "$ABS_CMD_TIMEOUT" dd if=/dev/zero of="$dd_file" bs=64M count=4 oflag=direct $dd_sync_arg >"$write_log" 2>&1; then
+  if run_timed "$ABS_CMD_TIMEOUT" dd if=/dev/zero of="$dd_file" bs=64M count=4 oflag=direct $dd_sync_arg >"$write_log" 2>&1; then
     add "Disk fallback dd write" "$(awk 'END{print}' "$write_log") (not scored)"
-  elif abs_timeout "$ABS_CMD_TIMEOUT" dd if=/dev/zero of="$dd_file" bs=64M count=4 $dd_sync_arg >"$write_log" 2>&1; then
+  elif run_timed "$ABS_CMD_TIMEOUT" dd if=/dev/zero of="$dd_file" bs=64M count=4 $dd_sync_arg >"$write_log" 2>&1; then
     add "Disk fallback dd write" "$(awk 'END{print}' "$write_log") (buffered; not scored)"
   else
     add "Disk fallback dd write" "FAILED; see $write_log"
   fi
   if [ -f "$dd_file" ]; then
-    if abs_timeout "$ABS_CMD_TIMEOUT" dd if="$dd_file" of=/dev/null bs=64M iflag=direct >"$read_log" 2>&1; then
+    if run_timed "$ABS_CMD_TIMEOUT" dd if="$dd_file" of=/dev/null bs=64M iflag=direct >"$read_log" 2>&1; then
       add "Disk fallback dd read" "$(awk 'END{print}' "$read_log") (not scored)"
-    elif abs_timeout "$ABS_CMD_TIMEOUT" dd if="$dd_file" of=/dev/null bs=64M >"$read_log" 2>&1; then
+    elif run_timed "$ABS_CMD_TIMEOUT" dd if="$dd_file" of=/dev/null bs=64M >"$read_log" 2>&1; then
       add "Disk fallback dd read" "$(awk 'END{print}' "$read_log") (buffered; not scored)"
     else
       add "Disk fallback dd read" "FAILED; see $read_log"
     fi
   fi
   rm -f "$dd_file" 2>/dev/null || true
+}
+
+script_sha256() {
+  # Hash the script only when bash can read the file it was launched from.
+  # curl|bash leaves BASH_SOURCE empty, so report n/a rather than hash $0.
+  local src="${BASH_SOURCE[0]:-}" digest=""
+  if [ -n "$src" ] && [ -r "$src" ]; then
+    if have sha256sum; then
+      digest="$(sha256sum "$src" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+    elif have shasum; then
+      digest="$(shasum -a 256 "$src" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+    fi
+  fi
+  if [[ "$digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    printf '%s' "$digest"
+  else
+    printf 'n/a'
+  fi
 }
 
 json_report() {
@@ -1520,7 +1624,7 @@ json_report() {
   ABS_JOBS="$JOBS" ABS_DEPTH="$DEPTH" ABS_IPERF_SERVER="$IPERF_SERVER" ABS_IPERF_TIME="$IPERF_TIME" ABS_IPERF_PARALLEL="$IPERF_PARALLEL" \
   ABS_CPU_PRIME="$CPU_PRIME" ABS_MEM_BLOCK="$MEM_BLOCK" ABS_STRICT="$STRICT" \
   ABS_SYSBENCH_VER="$SYSBENCH_VER" ABS_FIO_VER="$FIO_VER" ABS_PYTHON_VER="$PYTHON_VER" \
-  ABS_SCRIPT_SHA256="$SCRIPT_SHA256" ABS_SCORE_MODEL="abs-local-v1" \
+  ABS_SCRIPT_SHA256="$SCRIPT_SHA256" ABS_SCORE_MODEL="abs-local-v1" ABS_TARGET_FS="$TARGET_FS_TYPE" ABS_TARGET_FS_CLASS="$TARGET_FS_CLASS" ABS_TARGET_FS_SKIP="$TARGET_FS_SKIP_REASON" \
   ABS_SCORE="$SCORE_TEXT" ABS_LOCAL_SCORE="$LOCAL_SCORE_TEXT" ABS_NETWORK_SCORE="$NETWORK_SCORE_TEXT" ABS_VERDICT="$VERDICT_TEXT" \
   python3 - "$RESULTS" <<'PY'
 import csv, json, os, re, shutil, sys
@@ -1603,6 +1707,10 @@ out = {
     'local_score': {'text': local_score_text, 'scope': 'local_cpu_memory_disk_fsync'},
     'network_score': {'text': network_score_text, 'included_in_score': False, 'weight': 0.0},
     'verdict': {'text': verdict_text, 'code': verdict_code, 'reason': verdict_reason},
+    'target_filesystem': {
+        'type': env('ABS_TARGET_FS'), 'class': env('ABS_TARGET_FS_CLASS'),
+        'skip_reason': env('ABS_TARGET_FS_SKIP'),
+    },
     'results': rows,
 }
 target = env('ABS_JSON_TARGET')
@@ -1623,6 +1731,11 @@ PY
 }
 
 cleanup() {
+  if [ -n "${ABS_ACTIVE_TIMEOUT_PID:-}" ]; then
+    kill -TERM "$ABS_ACTIVE_TIMEOUT_PID" 2>/dev/null || true
+    wait "$ABS_ACTIVE_TIMEOUT_PID" 2>/dev/null || true
+    ABS_ACTIVE_TIMEOUT_PID=""
+  fi
   [ -n "$RUN_DIR" ] || return 0
   rm -f -- "$FIO_FILE" "$FIO_FILE".* "$RUN_DIR/abs-dd.test" 2>/dev/null || true
   rmdir -- "$RUN_DIR" 2>/dev/null || true
@@ -1632,8 +1745,12 @@ reset_test_files() {
   rm -f -- "$FIO_FILE" "$FIO_FILE".* "$RUN_DIR/abs-dd.test" 2>/dev/null || true
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 RUN_DIR="$(mktemp -d "$DIR/.abs-run.XXXXXXXX")"
 FIO_FILE="$RUN_DIR/abs.test"
+detect_target_fs
 
 if [ "$NET_INFO" = "1" ]; then
   say "已启用网络信息查询：检查 IPv4/IPv6 和外部 IP/ASN。" "Network info lookup enabled: checks IPv4/IPv6 and external IP/ASN. Use --no-net-info to skip."
@@ -1672,14 +1789,86 @@ if [ "${SWAP_KIB:-0}" = "0" ]; then
 fi
 RAM_TEXT="$(human_kib "$RAM_KIB")"
 SWAP_TEXT="$(human_kib "$SWAP_KIB")"
+memory_limit_kib() {
+  # Return a conservative sizing base: total limit and remaining headroom.
+  # Include ancestors; non-Linux hosts return -1 (unknown), not zero.
+  python3 - "${1:-/proc/self/cgroup}" "${2:-/proc/self/mountinfo}" <<'PY'
+import pathlib, re, sys
+
+def unescape(s):
+    return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), s)
+
+limits = []
+try:
+    groups = [line.split(':', 2) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+    mounts = pathlib.Path(sys.argv[2]).read_text().splitlines()
+    for line in mounts:
+        left, right = line.split(' - ', 1)
+        fields, fs = left.split(), right.split()
+        if fs[0] not in ('cgroup', 'cgroup2'):
+            continue
+        if fs[0] == 'cgroup' and 'memory' not in fs[2].split(','):
+            continue
+        root, mount = pathlib.PurePosixPath(unescape(fields[3])), pathlib.Path(unescape(fields[4]))
+        filename = 'memory.max' if fs[0] == 'cgroup2' else 'memory.limit_in_bytes'
+        for _, controllers, group in groups:
+            if (fs[0] == 'cgroup2' and controllers) or (fs[0] == 'cgroup' and 'memory' not in controllers.split(',')):
+                continue
+            group = pathlib.PurePosixPath('/' + str(group).lstrip('/'))
+            try:
+                relative = group.relative_to(root)
+            except ValueError:
+                relative = pathlib.PurePosixPath('.')
+            if '..' in relative.parts:
+                relative = pathlib.PurePosixPath('.')
+            current = mount / relative
+            while True:
+                try:
+                    value = (current / filename).read_text().strip()
+                    if value.isdigit() and 0 <= int(value) < 2**60:
+                        limit = int(value)
+                        limits.append(limit // 1024)
+                        usage_name = 'memory.current' if fs[0] == 'cgroup2' else 'memory.usage_in_bytes'
+                        try:
+                            usage = int((current / usage_name).read_text().strip())
+                            # The final workload uses a quarter of this base:
+                            # leave at least half of the remaining headroom free.
+                            limits.append(max(0, limit - usage) // 1024 * 2)
+                        except (OSError, ValueError):
+                            pass
+                except OSError:
+                    pass
+                if current == mount:
+                    break
+                current = current.parent
+except (OSError, ValueError, IndexError):
+    pass
+print(min(limits) if limits else -1)
+PY
+}
+
+MEM_RAM_KIB="${RAM_KIB:-0}"
+MEM_AVAILABLE_KIB="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+if [[ "$MEM_AVAILABLE_KIB" =~ ^[0-9]+$ ]] && [ "$((MEM_AVAILABLE_KIB * 2))" -lt "$MEM_RAM_KIB" ]; then
+  MEM_RAM_KIB=$((MEM_AVAILABLE_KIB * 2))
+fi
+CGROUP_LIMIT_KIB="$(memory_limit_kib 2>/dev/null || echo -1)"
+if [[ "$CGROUP_LIMIT_KIB" =~ ^[0-9]+$ ]] && [ "$CGROUP_LIMIT_KIB" -lt "$MEM_RAM_KIB" ]; then
+  MEM_RAM_KIB="$CGROUP_LIMIT_KIB"
+fi
+
 resolve_mem_block() {
   local mem_block_mib power digits
   if [ "$MEM_BLOCK" = "auto" ]; then
-    # Each local-scope thread gets its own working set. Keep the existing
-    # 32–256 MiB bounds, then round down: sysbench requires a power of two.
-    mem_block_mib=$(( ${RAM_KIB:-0} / 1024 / T / 4 ))
+    # Keep the aggregate allocation within RAM/4. Never raise a small
+    # per-thread budget to 32 MiB: on many-core low-RAM hosts that can OOM.
+    # Skip rather than substitute a cache-sized, non-comparable workload.
+    mem_block_mib=$(( ${MEM_RAM_KIB:-${RAM_KIB:-0}} / 1024 / T / 4 ))
+    if [ "$mem_block_mib" -lt 32 ]; then
+      MEM_BLOCK=""
+      return 0
+    fi
     [ "$mem_block_mib" -gt 256 ] && mem_block_mib=256
-    [ "$mem_block_mib" -lt 32 ] && mem_block_mib=32
     power=32
     while [ "$((power * 2))" -le "$mem_block_mib" ]; do
       power=$((power * 2))
@@ -1845,6 +2034,10 @@ if have sysbench; then
     add "CPU steal (1s sample)" "${steal_pct}% (informational; host contention)"
   fi
 
+  if [ -z "$MEM_BLOCK" ]; then
+    add "Memory read" "SKIPPED; insufficient RAM budget for 32 MiB per thread; reduce --threads"
+    add "Memory write" "SKIPPED; insufficient RAM budget for 32 MiB per thread; reduce --threads"
+  else
   if run_log mem-read sysbench memory --threads="$T" --time="$D" --events=0 --percentile=95 --memory-scope=local --memory-block-size="$MEM_BLOCK" --memory-total-size=100T --memory-oper=read --memory-access-mode=seq run; then
     mem_read="$(memspeed "$LAST_LOG")"
     if [ -n "$mem_read" ]; then
@@ -1866,11 +2059,16 @@ if have sysbench; then
   else
     add "Memory write" "FAILED; see $LAST_LOG"
   fi
+  fi
 else
   add "sysbench CPU/memory" "sysbench not installed; skipped"
 fi
 
-if [ -n "$FIO_BIN" ] && have python3; then
+add "Disk target filesystem" "$TARGET_FS_DISPLAY"
+if [ "$TARGET_FS_CLASS" = "memory" ]; then
+  add "fio disk tests" "$TARGET_FS_SKIP_REASON"
+  dd_fallback
+elif [ -n "$FIO_BIN" ] && have python3; then
   need_bytes="$(size_bytes "$SIZE" 2>/dev/null || echo -1)"
   avail_kib="$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2 {print $4+0}' || echo 0)"
   avail_bytes=$(( ${avail_kib:-0} * 1024 ))
@@ -1980,11 +2178,11 @@ add_note "Privacy note" "No result upload. Default network sanity uses Cloudflar
 
 ELAPSED_SECONDS=$(( $(date +%s) - TIME_START_EPOCH ))
 if have python3; then
-  SYSBENCH_VER="$(sysbench --version 2>/dev/null | awk 'NR==1{print $2}')"
-  if [ -n "$FIO_BIN" ]; then FIO_VER="$("$FIO_BIN" --version 2>/dev/null | sed 's/^fio-//')"; else FIO_VER=""; fi
-  PYTHON_VER="$(python3 --version 2>/dev/null | awk '{print $2}')"
-  SCRIPT_SHA256="$([ -f "$0" ] && { sha256sum "$0" 2>/dev/null || shasum -a 256 "$0" 2>/dev/null; } | awk 'NR==1{print $1}')"
-  [ -z "${SCRIPT_SHA256:-}" ] && SCRIPT_SHA256="n/a"
+  SYSBENCH_VER="$(sysbench --version 2>/dev/null | awk 'NR==1{print $2}' || true)"
+  if [ -n "$FIO_BIN" ]; then FIO_VER="$("$FIO_BIN" --version 2>/dev/null | sed 's/^fio-//' || true)"; else FIO_VER=""; fi
+  PYTHON_VER="$(python3 --version 2>/dev/null | awk '{print $2}' || true)"
+  SCRIPT_SHA256="$(script_sha256)"
+  SCRIPT_SHA256="${SCRIPT_SHA256:-n/a}"
   if JSON_WRITTEN="$(json_report)"; then
     add_note "JSON result" "$JSON_WRITTEN"
     [ -n "$JSON_FILE" ] && add_note "JSON copy" "$JSON_FILE"
