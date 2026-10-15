@@ -709,7 +709,7 @@ abs_timeout() {
   local secs="$1"; shift
   local pid="" watcher="" rc=0 timed_out=0 worker_pid
   worker_pid="$(exec sh -c 'echo "$PPID"')"
-  # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+  # shellcheck disable=SC2317,SC2329 # Invoked indirectly by the EXIT trap.
   timeout_cleanup() {
     if [ -n "$watcher" ]; then
       kill -TERM -- "-$watcher" 2>/dev/null || true
@@ -1852,7 +1852,7 @@ MEM_AVAILABLE_KIB="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/de
 if [[ "$MEM_AVAILABLE_KIB" =~ ^[0-9]+$ ]] && [ "$((MEM_AVAILABLE_KIB * 2))" -lt "$MEM_RAM_KIB" ]; then
   MEM_RAM_KIB=$((MEM_AVAILABLE_KIB * 2))
 fi
-CGROUP_LIMIT_KIB="$(memory_limit_kib 2>/dev/null || echo -1)"
+CGROUP_LIMIT_KIB="$(memory_limit_kib /proc/self/cgroup /proc/self/mountinfo 2>/dev/null || echo -1)"
 if [[ "$CGROUP_LIMIT_KIB" =~ ^[0-9]+$ ]] && [ "$CGROUP_LIMIT_KIB" -lt "$MEM_RAM_KIB" ]; then
   MEM_RAM_KIB="$CGROUP_LIMIT_KIB"
 fi
