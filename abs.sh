@@ -576,8 +576,8 @@ zh_reason() {
   reason="${reason//CPU component is weak (component score /CPU 分项偏弱（得分 }"
   reason="${reason//memory component is weak (component score /内存分项偏弱（得分 }"
   reason="${reason//disk component is weak (component score /磁盘性能偏弱（得分 }"
-  reason="${reason//fsync component is weak (component score /fsync 性能偏弱（得分 }"
-  reason="${reason//weak durable-write\/fsync/持久化写入\/fsync 偏弱}"
+  reason="${reason//fsync component is weak (component score /持久化写入（fsync）偏慢，网络存储常见，数据库类负载受影响（得分 }"
+  reason="${reason//low durable-write rate (common on network-replicated storage)/持久化写入速率偏低（网络复制存储常见）}"
   reason="${reason//OpenVZ\/container storage can be cache-inflated/OpenVZ\/容器磁盘数据可能受缓存影响}"
   reason="${reason//very high write\/fsync numbers; verify with --full before buying/写入\/fsync 数值异常高，购买前请用 --full 复测}"
   reason="${reason//; /；}"
@@ -1285,7 +1285,7 @@ if component_scores:
         reason = f'{floor_name} component is weak (component score {round(floor_score)})'
 why = []
 if fsync is not None and fsync < 500:
-    why.append('weak durable-write/fsync')
+    why.append('low durable-write rate (common on network-replicated storage)')
 if 'openvz' in vm_type:
     why.append('OpenVZ/container storage can be cache-inflated')
 if (qd1_write is not None and qd1_write > 100000) or (fsync is not None and fsync > 8000):
