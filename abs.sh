@@ -572,11 +572,11 @@ zh_reason() {
   reason="${reason//critical CPU bottleneck (component score /CPU 严重瓶颈（分项得分 }"
   reason="${reason//critical memory bottleneck (component score /内存严重瓶颈（分项得分 }"
   reason="${reason//critical disk bottleneck (component score /磁盘严重瓶颈（分项得分 }"
-  reason="${reason//critical fsync bottleneck (component score /fsync 严重瓶颈（分项得分 }"
+  reason="${reason//critical durable-write (fsync) bottleneck (component score /持久化写入（fsync）严重偏慢（分项得分 }"
   reason="${reason//CPU component is weak (component score /CPU 分项偏弱（得分 }"
   reason="${reason//memory component is weak (component score /内存分项偏弱（得分 }"
   reason="${reason//disk component is weak (component score /磁盘性能偏弱（得分 }"
-  reason="${reason//fsync component is weak (component score /持久化写入（fsync）偏慢，网络存储常见，数据库类负载受影响（得分 }"
+  reason="${reason//fsync component is weak (component score /持久化写入（fsync）偏慢，网络存储常见（得分 }"
   reason="${reason//low durable-write rate (common on network-replicated storage)/持久化写入速率偏低（网络复制存储常见）}"
   reason="${reason//OpenVZ\/container storage can be cache-inflated/OpenVZ\/容器磁盘数据可能受缓存影响}"
   reason="${reason//very high write\/fsync numbers; verify with --full before buying/写入\/fsync 数值异常高，购买前请用 --full 复测}"
@@ -1278,7 +1278,8 @@ if component_scores:
     floor_name, floor_score = min(component_scores.items(), key=lambda item: item[1])
     if floor_score < 250:
         verdict = 'AVOID'
-        reason = f'critical {floor_name} bottleneck (component score {round(floor_score)})'
+        floor_label = 'durable-write (fsync)' if floor_name == 'fsync' else floor_name
+        reason = f'critical {floor_label} bottleneck (component score {round(floor_score)})'
     elif floor_score < 500:
         if verdict == 'KEEP':
             verdict = 'MAYBE'

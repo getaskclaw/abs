@@ -129,13 +129,76 @@ class AbsTests(unittest.TestCase):
             [
                 "bash",
                 "-c",
-                helpers + "\nzh_verdict 'MAYBE - disk component is weak (component score 288); weak durable-write/fsync'",
+                helpers + "\nzh_verdict 'MAYBE - disk component is weak (component score 288); low durable-write rate (common on network-replicated storage)'",
             ],
             text=True,
             capture_output=True,
             check=True,
         )
         self.assertEqual(proc.stdout, "谨慎保留 — 磁盘性能偏弱")
+
+    def test_chinese_fsync_wording_is_mapped(self) -> None:
+        helpers = extract_between(self.source, "zh_reason() {", "\n}\n\nzh_result()") + "\n}\n"
+        match = re.search(
+            r"abs_verdict\(\) \{\n  python3 - \"\$SCORE_TEXT\" \"\$RESULTS\" \"\$VM_TYPE\" \"\$T\" \"\$KV\" <<'PY'\n(.*?)\nPY\n\}",
+            self.source,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        assert match is not None
+        code = match.group(1)
+        why = "low durable-write rate (common on network-replicated storage)"
+
+        def zh(call: str) -> str:
+            proc = subprocess.run(
+                ["bash", "-c", helpers + "\n" + call],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return proc.stdout
+
+        # Feed the real English verdict into zh_verdict so a change to the
+        # English wording without the matching Chinese mapping is caught.
+        cases = [
+            (
+                300,
+                f"MAYBE - fsync component is weak (component score 387); {why}",
+                "谨慎保留 — 持久化写入（fsync）偏慢，网络存储常见",
+            ),
+            (
+                50,
+                f"AVOID - critical durable-write (fsync) bottleneck (component score 158); {why}",
+                "不建议保留 — 持久化写入（fsync）严重偏慢",
+            ),
+        ]
+        for fsync, english, chinese in cases:
+            with self.subTest(fsync=fsync):
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8") as results:
+                    results.write(
+                        "Metric\tResult\n"
+                        "CPU single thread\t1200 events/s\n"
+                        "CPU all threads (1)\t1200 events/s\n"
+                        "Memory read (1 threads)\t30000 MiB/sec\n"
+                        "Memory write (1 threads)\t20000 MiB/sec\n"
+                        "Disk random read 4K QD1\t10000 IOPS\n"
+                        "Disk random write 4K QD1\t5000 IOPS\n"
+                        f"Disk durable write 4K fsync\t{fsync} writes/s\n"
+                    )
+                    results.flush()
+                    proc = subprocess.run(
+                        ["python3", "-c", code, "FULL 1300 (local only)", results.name, "kvm"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                verdict = proc.stdout.strip()
+                self.assertEqual(verdict, english)
+                self.assertEqual(zh(f"zh_verdict '{verdict}'"), chinese)
+
+        # zh_verdict drops everything after "; ", so the why mapping is only
+        # reachable through zh_reason directly.
+        self.assertEqual(zh(f"zh_reason '{why}'"), "持久化写入速率偏低（网络复制存储常见）")
 
     def test_dependency_tools_status_is_clear(self) -> None:
         metric = extract_between(self.source, "zh_metric() {", "\n}\n\nzh_components()") + "\n}\n"
