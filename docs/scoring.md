@@ -63,7 +63,8 @@ from a reference fleet:
 - `2000 writes/s` (fsync): durable-write rate where storage genuinely
   persists data vs. where flushes are absorbed by volatile cache.
   Network-replicated storage (e.g. Ceph) is typically well under; a low
-  fsync score means slow commits, not a faulty disk.
+  fsync score reflects slow durable writes, and by itself cannot tell a slow
+  disk from a faulty one.
 - `800/1200` verdict thresholds and the `0.40/0.15/0.30/0.15` weights: chosen
   to weight CPU and 4K QD1 disk (what makes a VPS *feel* slow) above memory
   bandwidth and fsync rate; not empirically optimized.
